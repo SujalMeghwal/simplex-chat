@@ -1908,8 +1908,8 @@ fun BoxScope.ChatItemsList(
       // With default touchSlop when you scroll LazyColumn, you can unintentionally open reply view
       LocalViewConfiguration provides LocalViewConfiguration.current.bigTouchSlop()
     ) {
-      val provider = {
-        providerForGallery(reversedChatItems.value.asReversed(), cItem.id) { indexInReversed ->
+      val provider = { downloadedOnly: Boolean ->
+        providerForGallery(reversedChatItems.value.asReversed(), cItem.id, downloadedOnly) { indexInReversed ->
           itemScope.launch {
             listState.value.scrollToItem(
               min(reversedChatItems.value.lastIndex, indexInReversed + 1),
@@ -3540,10 +3540,16 @@ sealed class ProviderMedia {
 fun providerForGallery(
   chatItems: List<ChatItem>,
   cItemId: Long,
+  downloadedOnly: Boolean = false,
   scrollTo: (Int) -> Unit
 ): ImageGalleryProvider {
   fun canShowMedia(item: ChatItem): Boolean =
-    (item.content.msgContent is MsgContent.MCImage || item.content.msgContent is MsgContent.MCVideo) && (item.file?.loaded == true && (getLoadedFilePath(item.file) != null || chatModel.connectedToRemote()))
+    (item.content.msgContent is MsgContent.MCImage || item.content.msgContent is MsgContent.MCVideo) &&
+      if (downloadedOnly) {
+        getLoadedFilePath(item.file) != null
+      } else {
+        item.file?.loaded == true && (getLoadedFilePath(item.file) != null || chatModel.connectedToRemote())
+      }
 
   fun item(skipInternalIndex: Int, initialChatId: Long): Pair<Int, ChatItem>? {
     var processedInternalIndex = -skipInternalIndex.sign

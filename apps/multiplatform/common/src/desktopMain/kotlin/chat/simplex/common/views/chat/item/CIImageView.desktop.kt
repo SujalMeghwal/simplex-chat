@@ -13,7 +13,7 @@ actual fun SimpleAndAnimatedImageView(
   data: ByteArray,
   imageBitmap: ImageBitmap,
   file: CIFile?,
-  imageProvider: () -> ImageGalleryProvider,
+  imageProvider: (Boolean) -> ImageGalleryProvider,
   smallView: Boolean,
   ImageView: @Composable (painter: Painter, onClick: () -> Unit) -> Unit
 ) {
@@ -21,7 +21,7 @@ actual fun SimpleAndAnimatedImageView(
   ImageView(BitmapPainter(imageBitmap)) {
     if (getLoadedFilePath(file) != null) {
       ModalManager.fullscreen.showCustomModal(animated = false) { close ->
-        ImageFullScreenView(imageProvider, close)
+        DesktopGalleryWithToggle(imageProvider, close)
       }
     }
   }

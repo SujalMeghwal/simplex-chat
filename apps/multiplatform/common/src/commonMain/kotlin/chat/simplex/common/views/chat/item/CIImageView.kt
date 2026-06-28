@@ -32,7 +32,7 @@ import kotlinx.coroutines.*
 fun CIImageView(
   image: String,
   file: CIFile?,
-  imageProvider: () -> ImageGalleryProvider,
+  imageProvider: (Boolean) -> ImageGalleryProvider,
   showMenu: MutableState<Boolean>,
   smallView: Boolean,
   receiveFile: (Long) -> Unit
@@ -276,7 +276,7 @@ expect fun SimpleAndAnimatedImageView(
   data: ByteArray,
   imageBitmap: ImageBitmap,
   file: CIFile?,
-  imageProvider: () -> ImageGalleryProvider,
+  imageProvider: (Boolean) -> ImageGalleryProvider,
   smallView: Boolean,
   ImageView: @Composable (painter: Painter, onClick: () -> Unit) -> Unit
 )

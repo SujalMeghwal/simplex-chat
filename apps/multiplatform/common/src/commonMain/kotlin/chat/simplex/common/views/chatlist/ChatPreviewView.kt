@@ -300,7 +300,7 @@ fun ChatPreviewView(
   fun chatItemContentPreview(chat: Chat, ci: ChatItem?) {
     val mc = ci?.content?.msgContent
     val provider by remember(chat.id, ci?.id, ci?.file?.fileStatus) {
-      mutableStateOf({ providerForGallery(chat.chatItems, ci?.id ?: 0) {} })
+      mutableStateOf({ _: Boolean -> providerForGallery(chat.chatItems, ci?.id ?: 0) {} })
     }
     val uriHandler = LocalUriHandler.current
     when (mc) {

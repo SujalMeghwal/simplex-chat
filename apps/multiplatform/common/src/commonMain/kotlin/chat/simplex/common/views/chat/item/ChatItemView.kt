@@ -70,7 +70,7 @@ fun ChatItemView(
   chat: Chat,
   cItem: ChatItem,
   composeState: MutableState<ComposeState>,
-  imageProvider: (() -> ImageGalleryProvider)? = null,
+  imageProvider: ((Boolean) -> ImageGalleryProvider)? = null,
   useLinkPreviews: Boolean,
   linkMode: SimplexLinkMode,
   revealed: State<Boolean>,

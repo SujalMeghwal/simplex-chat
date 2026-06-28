@@ -22,7 +22,7 @@ actual fun SimpleAndAnimatedImageView(
   data: ByteArray,
   imageBitmap: ImageBitmap,
   file: CIFile?,
-  imageProvider: () -> ImageGalleryProvider,
+  imageProvider: (Boolean) -> ImageGalleryProvider,
   smallView: Boolean,
   ImageView: @Composable (painter: Painter, onClick: () -> Unit) -> Unit
 ) {
@@ -37,7 +37,7 @@ actual fun SimpleAndAnimatedImageView(
     hideKeyboard(view)
     if (getLoadedFilePath(file) != null) {
       ModalManager.fullscreen.showCustomModal(animated = false) { close ->
-        ImageFullScreenView(imageProvider, close)
+        ImageFullScreenView({ imageProvider(false) }, close)
       }
     }
   }

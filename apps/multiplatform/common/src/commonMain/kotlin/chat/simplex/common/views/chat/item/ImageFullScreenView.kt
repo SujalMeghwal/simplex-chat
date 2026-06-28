@@ -9,7 +9,10 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.*
+import androidx.compose.ui.input.key.*
 import androidx.compose.ui.input.pointer.*
 import androidx.compose.ui.layout.onGloballyPositioned
 import chat.simplex.common.model.CryptoFile
@@ -175,7 +178,36 @@ fun ImageFullScreenView(imageProvider: () -> ImageGalleryProvider, close: () -> 
   if (appPlatform.isAndroid) {
     HorizontalPager(state = pagerState) { index -> Content(index) }
   } else {
-    Content(pagerState.currentPage)
+    // Desktop has no swipe gesture, so navigate between media with left/right arrow keys
+    val focusRequester = remember { FocusRequester() }
+    LaunchedEffect(Unit) {
+      focusRequester.requestFocus()
+    }
+    val goToPage = { page: Int ->
+      if (page in 0 until provider.totalMediaSize.value && provider.getMedia(page) != null) {
+        scope.launch { pagerState.scrollToPage(page) }
+        true
+      } else {
+        false
+      }
+    }
+    Box(
+      Modifier
+        .fillMaxSize()
+        .focusRequester(focusRequester)
+        .focusable()
+        .onPreviewKeyEvent { e ->
+          if (e.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+          when (e.key) {
+            Key.DirectionLeft -> goToPage(pagerState.currentPage - 1)
+            Key.DirectionRight -> goToPage(pagerState.currentPage + 1)
+            Key.Escape -> { goBack(); true }
+            else -> false
+          }
+        }
+    ) {
+      Content(pagerState.currentPage)
+    }
   }
 }
 

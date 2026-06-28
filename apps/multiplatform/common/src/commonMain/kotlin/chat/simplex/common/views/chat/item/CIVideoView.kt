@@ -31,7 +31,7 @@ fun CIVideoView(
   image: String,
   duration: Int,
   file: CIFile?,
-  imageProvider: () -> ImageGalleryProvider,
+  imageProvider: (Boolean) -> ImageGalleryProvider,
   showMenu: MutableState<Boolean>,
   smallView: Boolean = false,
   receiveFile: (Long) -> Unit
@@ -61,7 +61,7 @@ fun CIVideoView(
       val openFullscreen = {
         hideKeyboard(view)
         ModalManager.fullscreen.showCustomModal(animated = false) { close ->
-          ImageFullScreenView(imageProvider, close)
+          openGalleryModal(imageProvider, close)
         }
       }
 

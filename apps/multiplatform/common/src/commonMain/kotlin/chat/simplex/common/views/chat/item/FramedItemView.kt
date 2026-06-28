@@ -35,7 +35,7 @@ fun FramedItemView(
   chat: Chat,
   ci: ChatItem,
   uriHandler: UriHandler? = null,
-  imageProvider: (() -> ImageGalleryProvider)? = null,
+  imageProvider: ((Boolean) -> ImageGalleryProvider)? = null,
   linkMode: SimplexLinkMode,
   showViaProxy: Boolean,
   showMenu: MutableState<Boolean>,
