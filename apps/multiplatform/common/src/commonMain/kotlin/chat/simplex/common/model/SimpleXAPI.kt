@@ -140,6 +140,8 @@ class AppPreferences {
   val showUnreadAndFavorites = mkBoolPreference(SHARED_PREFS_SHOW_UNREAD_AND_FAVORITES, false)
   val chatArchiveName = mkStrPreference(SHARED_PREFS_CHAT_ARCHIVE_NAME, null)
   val chatArchiveTime = mkDatePreference(SHARED_PREFS_CHAT_ARCHIVE_TIME, null)
+  val autoBackupEnabled = mkBoolPreference(SHARED_PREFS_AUTO_BACKUP_ENABLED, false)
+  val autoBackupFolder = mkStrPreference(SHARED_PREFS_AUTO_BACKUP_FOLDER, null)
   val chatLastStart = mkDatePreference(SHARED_PREFS_CHAT_LAST_START, null)
   val chatStopped = mkBoolPreference(SHARED_PREFS_CHAT_STOPPED, false)
   val developerTools = mkBoolPreference(SHARED_PREFS_DEVELOPER_TOOLS, false)
@@ -413,6 +415,8 @@ class AppPreferences {
     private const val SHARED_PREFS_SHOW_UNREAD_AND_FAVORITES = "ShowUnreadAndFavorites"
     private const val SHARED_PREFS_CHAT_ARCHIVE_NAME = "ChatArchiveName"
     private const val SHARED_PREFS_CHAT_ARCHIVE_TIME = "ChatArchiveTime"
+    private const val SHARED_PREFS_AUTO_BACKUP_ENABLED = "AutoBackupEnabled"
+    private const val SHARED_PREFS_AUTO_BACKUP_FOLDER = "AutoBackupFolder"
     private const val SHARED_PREFS_APP_LANGUAGE = "AppLanguage"
     private const val SHARED_PREFS_APP_UPDATE_CHANNEL = "AppUpdateChannel"
     private const val SHARED_PREFS_APP_SKIPPED_UPDATE = "AppSkippedUpdate"

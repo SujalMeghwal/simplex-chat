@@ -1586,6 +1586,17 @@ fun ChatInfoToolbarTitle(cInfo: ChatInfo, imageSize: Dp = 40.dp, iconColor: Colo
           maxLines = 1, overflow = TextOverflow.Ellipsis
         )
       }
+      val groupMemberCount = (cInfo as? ChatInfo.Group)?.let { g ->
+        if (!g.groupInfo.useRelays && g.groupInfo.membership.memberCurrent) g.groupInfo.groupSummary.currentMembers else null
+      }
+      if (groupMemberCount != null && groupMemberCount > 0) {
+        Text(
+          "$groupMemberCount members",
+          style = MaterialTheme.typography.body2,
+          color = MaterialTheme.colors.secondary,
+          maxLines = 1, overflow = TextOverflow.Ellipsis
+        )
+      }
     }
     val chatSubStatus = chatModel.chatSubStatus.value
     if (

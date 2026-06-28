@@ -111,7 +111,17 @@ fun SettingsLayout(
 
     SectionView(stringResource(MR.strings.settings_section_title_chat_database)) {
       DatabaseItem(encrypted, passphraseSaved, showSettingsModal { DatabaseView() }, stopped)
-      SettingsActionItem(painterResource(MR.images.ic_ios_share), stringResource(MR.strings.migrate_from_device_to_another_device), { withAuth(generalGetString(MR.strings.auth_open_migration_to_another_device), generalGetString(MR.strings.auth_log_in_using_credential)) { ModalManager.fullscreen.showCustomModal { close -> MigrateFromDeviceView(close) } } }, disabled = stopped)
+      SectionItemView(
+        click = if (stopped) null else ({ withAuth(generalGetString(MR.strings.auth_open_migration_to_another_device), generalGetString(MR.strings.auth_log_in_using_credential)) { ModalManager.fullscreen.showCustomModal { close -> MigrateFromDeviceView(close) } } }),
+        disabled = stopped
+      ) {
+        Icon(painterResource(MR.images.ic_ios_share), contentDescription = null, tint = if (stopped) MaterialTheme.colors.secondary else MaterialTheme.colors.secondary)
+        TextIconSpaced(false)
+        Column(Modifier.weight(1f)) {
+          Text(stringResource(MR.strings.migrate_from_device_to_another_device), color = if (stopped) MaterialTheme.colors.secondary else Color.Unspecified)
+          Text("Move all chats to a new phone or PC", style = MaterialTheme.typography.caption, color = MaterialTheme.colors.secondary)
+        }
+      }
     }
 
     SectionDividerSpaced()

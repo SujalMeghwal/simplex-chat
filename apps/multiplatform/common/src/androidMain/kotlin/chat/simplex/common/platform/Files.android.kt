@@ -33,6 +33,8 @@ actual fun desktopOpenDatabaseDir() {}
 
 actual fun desktopOpenDir(dir: File) {}
 
+actual suspend fun pickFolderDialog(): String? = null // not supported on Android
+
 @Composable
 actual fun rememberFileChooserLauncher(getContent: Boolean, rememberedValue: Any?, onResult: (URI?) -> Unit): FileChooserLauncher {
   val launcher = rememberLauncherForActivityResult(

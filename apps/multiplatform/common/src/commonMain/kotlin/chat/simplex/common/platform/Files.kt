@@ -175,6 +175,8 @@ private fun fileReady(file: CIFile, filePath: String) =
 /**
 * [rememberedValue] is used in `remember(rememberedValue)`. So when the value changes, file saver will update a callback function
 * */
+expect suspend fun pickFolderDialog(): String?
+
 @Composable
 expect fun rememberFileChooserLauncher(getContent: Boolean, rememberedValue: Any? = null, onResult: (URI?) -> Unit): FileChooserLauncher
 

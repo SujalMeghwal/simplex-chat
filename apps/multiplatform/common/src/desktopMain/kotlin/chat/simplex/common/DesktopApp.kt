@@ -120,18 +120,27 @@ private fun ApplicationScope.AppWindow(closedByError: MutableState<Boolean>) {
   }
 
   simplexWindowState.windowState = windowState
+  val showQuickSwitcher = remember { mutableStateOf(false) }
   // Reload all strings in all @Composable's after language change at runtime
   if (remember { ChatController.appPrefs.appLanguage.state }.value != "") {
-    Window(state = windowState, visible = simplexWindowState.windowVisible.value, icon = painterResource(MR.images.ic_simplex), onCloseRequest = { handleCloseRequest(closedByError) }, onKeyEvent = {
-      if (it.key == Key.Escape && it.type == KeyEventType.KeyUp) {
-        simplexWindowState.backstack.lastOrNull()?.invoke() != null
-      } else {
-        false
+    Window(state = windowState, visible = simplexWindowState.windowVisible.value, icon = painterResource(MR.images.ic_simplex), onCloseRequest = { handleCloseRequest(closedByError) }, onKeyEvent = { e ->
+      when {
+        e.isCtrlPressed && e.key == Key.K && e.type == KeyEventType.KeyDown -> {
+          showQuickSwitcher.value = !showQuickSwitcher.value; true
+        }
+        e.key == Key.Escape && e.type == KeyEventType.KeyUp -> {
+          if (showQuickSwitcher.value) { showQuickSwitcher.value = false; true }
+          else simplexWindowState.backstack.lastOrNull()?.invoke() != null
+        }
+        else -> false
       }
     }, title = "SimpleX") {
 //      val hardwareAccelerationDisabled = remember { listOf(GraphicsApi.SOFTWARE_FAST, GraphicsApi.SOFTWARE_COMPAT, GraphicsApi.UNKNOWN).contains(window.renderApi) }
       simplexWindowState.window = window
       AppScreen()
+      if (showQuickSwitcher.value) {
+        chat.simplex.common.views.chatlist.QuickSwitcher(onDismiss = { showQuickSwitcher.value = false })
+      }
       if (simplexWindowState.openDialog.isAwaiting) {
         FileDialogChooser(
           title = "SimpleX",
@@ -241,15 +250,21 @@ private fun ApplicationScope.handleCloseRequest(closedByError: MutableState<Bool
   }
   val pref = ChatController.appPrefs.closeBehavior
   when (pref.get()) {
-    CloseBehavior.Quit -> exitApplication()
+    CloseBehavior.Quit -> {
+      withBGApi { chat.simplex.common.views.database.runAutoBackupIfNeeded(chatModel) }
+      exitApplication()
+    }
     CloseBehavior.MinimizeToTray -> if (trayIsAvailable && singleInstanceLock) {
       simplexWindowState.windowVisible.value = false
-    } else exitApplication()
+    } else {
+      withBGApi { chat.simplex.common.views.database.runAutoBackupIfNeeded(chatModel) }
+      exitApplication()
+    }
     CloseBehavior.Ask -> if (trayIsAvailable && singleInstanceLock) {
       requestCloseBehavior()
     } else {
-      // Tray unavailable — Minimize is not a real option; remember Quit and exit.
       pref.set(CloseBehavior.Quit)
+      withBGApi { chat.simplex.common.views.database.runAutoBackupIfNeeded(chatModel) }
       exitApplication()
     }
   }

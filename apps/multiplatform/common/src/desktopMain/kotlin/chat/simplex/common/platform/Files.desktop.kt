@@ -8,6 +8,9 @@ import chat.simplex.res.MR
 import java.awt.Desktop
 import java.io.*
 import java.net.URI
+import javax.swing.JFileChooser
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 actual val dataDir: File = File(desktopPlatform.dataPath)
 actual val tmpDir: File = File(System.getProperty("java.io.tmpdir") + File.separator + "simplex").also { it.deleteOnExit() }
@@ -43,6 +46,14 @@ actual fun desktopOpenDir(dir: File) {
       )
     }
   }
+}
+
+actual suspend fun pickFolderDialog(): String? = withContext(Dispatchers.Main) {
+  val chooser = JFileChooser()
+  chooser.fileSelectionMode = JFileChooser.DIRECTORIES_ONLY
+  chooser.dialogTitle = "Select backup folder"
+  val result = chooser.showOpenDialog(null)
+  if (result == JFileChooser.APPROVE_OPTION) chooser.selectedFile.absolutePath else null
 }
 
 @Composable

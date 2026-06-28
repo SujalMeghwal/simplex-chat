@@ -19,6 +19,8 @@ import androidx.compose.desktop.ui.tooling.preview.Preview
 import androidx.compose.foundation.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontStyle
@@ -386,10 +388,23 @@ fun ChatPreviewView(
     }
   }
 
-  Box(contentAlignment = Alignment.Center) {
+  val hasUnread = chat.chatStats.unreadCount > 0 || chat.chatStats.unreadChat
+  val unreadAccent = MaterialTheme.colors.primary
+  Box(
+    contentAlignment = Alignment.Center,
+    modifier = if (hasUnread) Modifier.drawBehind {
+      drawRect(unreadAccent, size = Size(3.5f.dp.toPx(), size.height))
+    } else Modifier
+  ) {
     Row {
       Box(contentAlignment = Alignment.BottomEnd) {
-        ChatInfoImage(cInfo, size = 72.dp * fontSizeSqrtMultiplier)
+        Box(
+          if (cInfo is ChatInfo.Group)
+            Modifier.border(2.dp, MaterialTheme.colors.primary.copy(alpha = 0.3f), CircleShape).padding(2.dp)
+          else Modifier
+        ) {
+          ChatInfoImage(cInfo, size = 72.dp * fontSizeSqrtMultiplier)
+        }
         Box(Modifier.padding(end = 6.sp.toDp(), bottom = 6.sp.toDp())) {
           chatPreviewImageOverlayIcon()
         }

@@ -1614,7 +1614,7 @@ fun ComposeView(
       }
     }
 
-    Surface(color = MaterialTheme.colors.background, contentColor = MaterialTheme.colors.onBackground) {
+    Surface(color = MaterialTheme.colors.background, contentColor = MaterialTheme.colors.onBackground, elevation = 8.dp) {
       Divider()
       if (chat.chatInfo is ChatInfo.Group && chat.chatInfo.groupInfo.nextConnectPrepared) {
         if (chat.chatInfo.groupInfo.businessChat == null) {

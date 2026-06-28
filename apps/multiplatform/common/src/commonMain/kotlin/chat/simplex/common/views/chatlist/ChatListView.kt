@@ -222,6 +222,19 @@ fun ChatListView(chatModel: ChatModel, userPickerState: MutableStateFlow<Animate
         NewChatSheetFloatingButton(oneHandUI, stopped)
       }
     }
+    val networkOnline by remember { derivedStateOf { chatModel.networkInfo.value.online } }
+    if (!networkOnline && chatModel.chatRunning.value == true) {
+      Box(
+        Modifier
+          .align(Alignment.BottomCenter)
+          .fillMaxWidth()
+          .background(MaterialTheme.colors.error.copy(alpha = 0.88f))
+          .padding(vertical = 4.dp),
+        contentAlignment = Alignment.Center
+      ) {
+        Text("Offline", color = Color.White, fontSize = 11.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.Medium)
+      }
+    }
   }
 
   if (searchText.value.text.isEmpty()) {

@@ -155,9 +155,10 @@ cmake {
 tasks.named("clean") {
   dependsOn("cmakeClean")
 }
-tasks.named("compileKotlinJvm") {
-  dependsOn("cmakeBuildAndCopy")
-}
+// cmake builds libapp-lib.dll; skip when using pre-built DLLs from installed app
+// tasks.named("compileKotlinJvm") {
+//   dependsOn("cmakeBuildAndCopy")
+// }
 afterEvaluate {
   tasks.create("cmakeBuildAndCopy") {
     dependsOn("cmakeBuild")
