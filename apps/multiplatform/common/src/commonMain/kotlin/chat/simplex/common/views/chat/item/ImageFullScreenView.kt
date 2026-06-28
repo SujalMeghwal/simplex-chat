@@ -5,6 +5,7 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.material.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
@@ -15,11 +16,16 @@ import androidx.compose.ui.graphics.*
 import androidx.compose.ui.input.key.*
 import androidx.compose.ui.input.pointer.*
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import chat.simplex.common.model.CryptoFile
 import chat.simplex.common.platform.*
 import chat.simplex.common.ui.theme.CurrentColors
 import chat.simplex.common.views.chat.ProviderMedia
 import chat.simplex.common.views.helpers.*
+import chat.simplex.res.MR
+import dev.icerock.moko.resources.compose.painterResource
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import java.net.URI
@@ -150,6 +156,22 @@ fun ImageFullScreenView(imageProvider: () -> ImageGalleryProvider, close: () -> 
               }
             )
           }
+          .pointerInput(Unit) {
+            awaitPointerEventScope {
+              while (true) {
+                val event = awaitPointerEvent()
+                if (event.type == PointerEventType.Scroll) {
+                  val scrollDelta = event.changes.firstOrNull()?.scrollDelta?.y ?: 0f
+                  scale = (scale * (1f - scrollDelta * 0.1f)).coerceIn(1f, 20f)
+                  if (scale <= 1f) {
+                    scale = 1f
+                    translationX = 0f
+                    translationY = 0f
+                  }
+                }
+              }
+            }
+          }
           .fillMaxSize()
         // LALAL
         // https://github.com/JetBrains/compose-multiplatform/pull/2015/files#diff-841b3825c504584012e1d1c834d731bae794cce6acad425d81847c8bbbf239e0R24
@@ -207,6 +229,39 @@ fun ImageFullScreenView(imageProvider: () -> ImageGalleryProvider, close: () -> 
         }
     ) {
       Content(pagerState.currentPage)
+      Text(
+        "${pagerState.currentPage + 1} / ${provider.totalMediaSize.value}",
+        modifier = Modifier.align(Alignment.TopStart).padding(12.dp),
+        color = Color.White,
+        fontSize = 14.sp,
+        fontWeight = FontWeight.Medium
+      )
+      if (pagerState.currentPage > 0) {
+        IconButton(
+          onClick = { goToPage(pagerState.currentPage - 1) },
+          modifier = Modifier.align(Alignment.CenterStart).padding(start = 4.dp)
+        ) {
+          Icon(
+            painterResource(MR.images.ic_arrow_back_ios_new),
+            contentDescription = "Previous",
+            modifier = Modifier.size(32.dp),
+            tint = Color.White.copy(alpha = 0.8f)
+          )
+        }
+      }
+      if (pagerState.currentPage < provider.totalMediaSize.value - 1) {
+        IconButton(
+          onClick = { goToPage(pagerState.currentPage + 1) },
+          modifier = Modifier.align(Alignment.CenterEnd).padding(end = 4.dp)
+        ) {
+          Icon(
+            painterResource(MR.images.ic_arrow_forward_ios),
+            contentDescription = "Next",
+            modifier = Modifier.size(32.dp),
+            tint = Color.White.copy(alpha = 0.8f)
+          )
+        }
+      }
     }
   }
 }

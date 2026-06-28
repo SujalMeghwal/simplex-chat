@@ -141,7 +141,7 @@ private fun recheckItems(chatInfo: ChatInfo,
 ) {
   val count = selectedChatItems.value?.size ?: 0
   deleteCountProhibited.value = count == 0 || count > 200
-  forwardCountProhibited.value = count == 0 || count > 20
+  forwardCountProhibited.value = count == 0 || count > 100
   canModerate.value = possibleToModerate(chatInfo)
   val selected = selectedChatItems.value ?: return
   var rDeleteEnabled = true

@@ -70,7 +70,7 @@ fun CIFileView(
   fun fileAction() {
     if (file != null) {
       when {
-        file.fileStatus is CIFileStatus.RcvInvitation || file.fileStatus is CIFileStatus.RcvAborted -> {
+        file.fileStatus is CIFileStatus.RcvInvitation || file.fileStatus is CIFileStatus.RcvAborted || file.fileStatus is CIFileStatus.RcvError -> {
           if (fileSizeValid(file)) {
             receiveFile(file.fileId)
           } else {
@@ -94,8 +94,6 @@ fun CIFileView(
               )
             FileProtocol.LOCAL -> {}
           }
-        file.fileStatus is CIFileStatus.RcvError ->
-          showFileErrorAlert(file.fileStatus.rcvFileError)
         file.fileStatus is CIFileStatus.RcvWarning ->
           showFileErrorAlert(file.fileStatus.rcvFileError, temporary = true)
         file.fileStatus is CIFileStatus.SndError ->
