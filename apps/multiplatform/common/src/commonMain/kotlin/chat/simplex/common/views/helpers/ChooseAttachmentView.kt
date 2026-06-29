@@ -12,6 +12,10 @@ sealed class AttachmentOption {
   object GalleryImage: AttachmentOption()
   object GalleryVideo: AttachmentOption()
   object File: AttachmentOption()
+  // Desktop: pick already-received images/videos from any chat and re-send them. Unlike the OS
+  // file picker, this works on chat messages (which hold the per-file decryption key), decrypts
+  // each to a temp plaintext copy, and sends as proper image/video — same idea as Forward.
+  object SimplexMedia: AttachmentOption()
 }
 
 @Composable

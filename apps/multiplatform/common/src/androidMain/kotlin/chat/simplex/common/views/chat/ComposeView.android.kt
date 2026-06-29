@@ -9,6 +9,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.core.content.ContextCompat
 import chat.simplex.common.helpers.toURI
+import chat.simplex.common.model.Chat
 import chat.simplex.common.platform.*
 import chat.simplex.common.views.helpers.*
 import chat.simplex.res.MR
@@ -16,6 +17,7 @@ import java.net.URI
 
 @Composable
 actual fun AttachmentSelection(
+  chat: Chat,
   composeState: MutableState<ComposeState>,
   attachmentOption: MutableState<AttachmentOption?>,
   processPickedFile: (URI?, String?) -> Unit,

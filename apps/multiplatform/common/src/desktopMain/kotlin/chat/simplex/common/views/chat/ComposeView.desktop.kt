@@ -1,12 +1,14 @@
 package chat.simplex.common.views.chat
 
 import androidx.compose.runtime.*
+import chat.simplex.common.model.Chat
 import chat.simplex.common.platform.*
 import chat.simplex.common.views.helpers.*
 import java.net.URI
 
 @Composable
 actual fun AttachmentSelection(
+  chat: Chat,
   composeState: MutableState<ComposeState>,
   attachmentOption: MutableState<AttachmentOption?>,
   processPickedFile: (URI?, String?) -> Unit,
@@ -32,6 +34,19 @@ actual fun AttachmentSelection(
       }
       AttachmentOption.File -> {
         filesLauncher.launch("*/*")
+      }
+      AttachmentOption.SimplexMedia -> {
+        // Pick already-received media from any chat and forward it into this chat via the core's
+        // forward command (handles files server-side — sends as proper image/video, no fileNotFound).
+        ModalManager.fullscreen.showCustomModal { close ->
+          SimplexMediaPickerView(
+            close = close,
+            onSend = { entries ->
+              close()
+              withBGApi { forwardMediaToChat(chat, entries) }
+            }
+          )
+        }
       }
       else -> {}
     }

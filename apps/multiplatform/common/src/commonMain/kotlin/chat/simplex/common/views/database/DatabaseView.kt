@@ -406,6 +406,26 @@ fun DatabaseLayout(
           color = if (deleteFilesDisabled) MaterialTheme.colors.secondary else Color.Red
         )
       }
+      val autoDeleteOld = remember { mutableStateOf(chatModel.controller.appPrefs.autoDeleteOldUndownloadedMedia.get()) }
+      SectionItemView {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+          Column(Modifier.weight(1f)) {
+            Text("Auto-remove old undownloaded media")
+            Text(
+              "Delete images/videos not downloaded within 48h, from all chats (this device only)",
+              style = MaterialTheme.typography.caption,
+              color = MaterialTheme.colors.secondary
+            )
+          }
+          DefaultSwitch(
+            checked = autoDeleteOld.value,
+            onCheckedChange = {
+              chatModel.controller.appPrefs.autoDeleteOldUndownloadedMedia.set(it)
+              autoDeleteOld.value = it
+            }
+          )
+        }
+      }
     }
     val (count, size) = appFilesCountAndSize.value
     SectionTextFooter(

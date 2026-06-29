@@ -36,6 +36,12 @@ fun initApp() {
   if (DatabaseUtils.ksSelfDestructPassword.get() == null) {
     initChatControllerOnStart()
   }
+  // Auto-remove old undownloaded media if enabled — wait for chats to load first.
+  withBGApi {
+    var tries = 0
+    while (chatModel.chats.value.isEmpty() && tries++ < 60) kotlinx.coroutines.delay(500)
+    chat.simplex.common.views.chat.cleanupOldUndownloadedMedia()
+  }
   // LALAL
   //testCrypto()
 }

@@ -19,8 +19,12 @@ actual fun ChooseAttachmentButtons(attachmentOption: MutableState<AttachmentOpti
     attachmentOption.value = AttachmentOption.GalleryVideo
     hide()
   }
-  ActionButton(Modifier.fillMaxWidth(1f), null, stringResource(MR.strings.choose_file), icon = painterResource(MR.images.ic_note_add)) {
+  ActionButton(Modifier.fillMaxWidth(0.5f), null, stringResource(MR.strings.choose_file), icon = painterResource(MR.images.ic_note_add)) {
     attachmentOption.value = AttachmentOption.File
+    hide()
+  }
+  ActionButton(Modifier.fillMaxWidth(1f), null, "From SimpleX", icon = painterResource(MR.images.ic_photo_library)) {
+    attachmentOption.value = AttachmentOption.SimplexMedia
     hide()
   }
 }

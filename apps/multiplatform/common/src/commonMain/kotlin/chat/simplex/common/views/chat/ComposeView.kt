@@ -281,6 +281,7 @@ fun chatItemPreview(chatItem: ChatItem): ComposePreview {
 // Spec: spec/client/compose.md#AttachmentSelection
 @Composable
 expect fun AttachmentSelection(
+  chat: Chat,
   composeState: MutableState<ComposeState>,
   attachmentOption: MutableState<AttachmentOption?>,
   processPickedFile: (URI?, String?) -> Unit,
@@ -400,7 +401,7 @@ fun ComposeView(
   val smallFont = MaterialTheme.typography.body1.copy(color = MaterialTheme.colors.onBackground)
   val textStyle = remember(MaterialTheme.colors.isLight) { mutableStateOf(smallFont) }
   val recState: MutableState<RecordingState> = remember { mutableStateOf(RecordingState.NotStarted) }
-  AttachmentSelection(composeState, attachmentOption, composeState::processPickedFile) { uris, text -> CoroutineScope(Dispatchers.IO).launch { composeState.processPickedMedia(uris, text) } }
+  AttachmentSelection(chat, composeState, attachmentOption, composeState::processPickedFile) { uris, text -> CoroutineScope(Dispatchers.IO).launch { composeState.processPickedMedia(uris, text) } }
 
   suspend fun fetchAndUpdateLinkPreview(url: String) {
     composeState.value = composeState.value.copy(preview = ComposePreview.CLinkPreview(null))
