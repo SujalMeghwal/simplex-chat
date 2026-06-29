@@ -813,8 +813,9 @@ suspend fun exportChatArchive(
     m.controller.appPrefs.chatArchiveTime.set(archiveTime)
   }
   chatArchiveFile.value = archivePath
-  // Integrity check: verify ZIP is readable and contains both DB files
-  verifyExportIntegrity(archivePath)
+  // Integrity check only for unattended folder/auto-backups — manual exports already surface
+  // archiveErrors to the user, and their archive lives only briefly before being copied away.
+  if (storagePath != null) verifyExportIntegrity(archivePath)
   return archivePath to archiveErrors
 }
 

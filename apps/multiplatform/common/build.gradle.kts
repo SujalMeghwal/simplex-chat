@@ -151,7 +151,6 @@ kotlin {
         implementation("com.github.NanoHttpd.nanohttpd:nanohttpd:efb2ebf")
         implementation("com.github.NanoHttpd.nanohttpd:nanohttpd-websocket:efb2ebf")
         implementation("com.squareup.okhttp3:okhttp:4.12.0")
-        implementation("net.lingala.zip4j:zip4j:2.11.5")
       }
     }
     val desktopTest by getting

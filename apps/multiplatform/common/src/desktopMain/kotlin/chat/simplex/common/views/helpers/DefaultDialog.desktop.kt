@@ -9,6 +9,7 @@ import androidx.compose.ui.input.key.*
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.*
 import chat.simplex.common.DialogParams
+import chat.simplex.common.platform.appFilesDir
 import chat.simplex.common.platform.desktopPlatform
 import chat.simplex.res.MR
 import kotlinx.coroutines.Dispatchers
@@ -75,6 +76,10 @@ fun FrameWindowScope.FileDialogChooserMultiple(
     val job = scope.launch(Dispatchers.Main) {
       val fileChooser = JFileChooser()
       fileChooser.dialogTitle = title
+      // Start open dialogs in SimpleX's own files folder so received/sent media is one click away.
+      if (isLoad && appFilesDir.exists()) {
+        fileChooser.currentDirectory = appFilesDir
+      }
       fileChooser.isMultiSelectionEnabled = allowMultiple && isLoad
       fileChooser.isAcceptAllFileFilterUsed = fileFilter == null
       if (fileFilter != null && fileFilterDescription != null) {

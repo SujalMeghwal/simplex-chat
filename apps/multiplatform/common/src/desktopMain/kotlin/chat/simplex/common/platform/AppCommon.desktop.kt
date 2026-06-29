@@ -32,11 +32,30 @@ fun initApp() {
   }
   applyAppLocale()
   deleteOldChatArchive()
+  cleanupBrokenMediaFiles()
   if (DatabaseUtils.ksSelfDestructPassword.get() == null) {
     initChatControllerOnStart()
   }
   // LALAL
   //testCrypto()
+}
+
+// Failed/aborted downloads leave 0-byte files in the files dir. They can't be decoded or played
+// and only produce "file does not exist / cannot be decoded" errors, so remove them on startup.
+// Files modified in the last 10 minutes are skipped so an in-progress download is never touched.
+private fun cleanupBrokenMediaFiles() {
+  withBGApi {
+    try {
+      val cutoff = System.currentTimeMillis() - 10 * 60_000L
+      var removed = 0
+      appFilesDir.listFiles()?.forEach { f ->
+        if (f.isFile && f.length() == 0L && f.lastModified() < cutoff && f.delete()) removed++
+      }
+      if (removed > 0) Log.i("SimpleX", "cleanupBrokenMediaFiles: removed $removed empty files")
+    } catch (e: Exception) {
+      Log.e("SimpleX", "cleanupBrokenMediaFiles failed: ${e.stackTraceToString()}")
+    }
+  }
 }
 
 //fun discoverVlcLibs(path: String) {

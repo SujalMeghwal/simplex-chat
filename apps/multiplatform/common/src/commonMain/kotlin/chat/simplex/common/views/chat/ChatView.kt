@@ -1481,6 +1481,18 @@ fun BoxScope.ChatInfoToolbar(
             )
           }
         }
+        // Downloaded-only media browser: images and videos already on disk, in two grid sections.
+        add {
+          ItemAction(
+            "Downloaded",
+            painterResource(MR.images.ic_download),
+            onClick = {
+              showContentFilterMenu.value = false
+              val rhId = chatModel.remoteHostId()
+              ModalManager.fullscreen.showCustomModal { close -> DownloadedMediaView(rhId, chatInfo, close) }
+            }
+          )
+        }
         if (showSearch.value) {
           add {
             ItemAction(
@@ -3554,13 +3566,36 @@ fun providerForGallery(
   downloadedOnly: Boolean = false,
   scrollTo: (Int) -> Unit
 ): ImageGalleryProvider {
-  fun canShowMedia(item: ChatItem): Boolean =
-    (item.content.msgContent is MsgContent.MCImage || item.content.msgContent is MsgContent.MCVideo) &&
-      if (downloadedOnly) {
-        getLoadedFilePath(item.file) != null
-      } else {
-        item.file?.loaded == true && (getLoadedFilePath(item.file) != null || chatModel.connectedToRemote())
-      }
+  // Decode the small base64 preview embedded in every image/video message into a displayable
+  // image. Lets the gallery flip through media that hasn't been downloaded — showing the preview
+  // instead of nothing — without triggering any XFTP download.
+  fun previewMedia(base64: String): ProviderMedia? = if (base64.isEmpty()) null else try {
+    val bitmap = base64ToBitmap(base64)
+    ProviderMedia.Image(compressImageData(bitmap, usePng = false).toByteArray(), bitmap)
+  } catch (e: Exception) {
+    null
+  }
+
+  // Lock navigation to the type of the opened item: open an image -> only images, open a video ->
+  // only videos. Applies everywhere the gallery is opened (chat + Downloaded grid).
+  val openedIsVideo = chatItems.firstOrNull { it.id == cItemId }?.content?.msgContent is MsgContent.MCVideo
+
+  fun canShowMedia(item: ChatItem): Boolean {
+    val mc = item.content.msgContent
+    if (mc !is MsgContent.MCImage && mc !is MsgContent.MCVideo) return false
+    if (openedIsVideo && mc !is MsgContent.MCVideo) return false
+    if (!openedIsVideo && mc !is MsgContent.MCImage) return false
+    if (downloadedOnly) return getLoadedFilePath(item.file) != null
+    // Hide failed/cancelled downloads — they can't be shown and only produce errors / dead previews.
+    when (item.file?.fileStatus) {
+      is CIFileStatus.RcvError, is CIFileStatus.RcvAborted, is CIFileStatus.RcvCancelled, is CIFileStatus.SndError -> return false
+      else -> {}
+    }
+    // Navigable if downloaded OR it carries an embedded preview we can show without downloading.
+    return getLoadedFilePath(item.file) != null ||
+      (mc is MsgContent.MCImage && mc.image.isNotEmpty()) ||
+      (mc is MsgContent.MCVideo && mc.image.isNotEmpty())
+  }
 
   fun item(skipInternalIndex: Int, initialChatId: Long): Pair<Int, ChatItem>? {
     var processedInternalIndex = -skipInternalIndex.sign
@@ -3588,21 +3623,21 @@ fun providerForGallery(
     override fun getMedia(index: Int): ProviderMedia? {
       val internalIndex = initialIndex - index
       val item = item(internalIndex, initialChatId)?.second ?: return null
-      return when (item.content.msgContent) {
+      return when (val mc = item.content.msgContent) {
         is MsgContent.MCImage -> {
           val res = runBlocking { getLoadedImage(item.file) }
           val filePath = getLoadedFilePath(item.file)
           if (res != null && filePath != null) {
             val (imageBitmap: ImageBitmap, data: ByteArray) = res
             ProviderMedia.Image(data, imageBitmap)
-          } else null
+          } else previewMedia(mc.image) // not downloaded — show embedded preview
         }
         is MsgContent.MCVideo -> {
           val filePath = if (chatModel.connectedToRemote() && item.file?.loaded == true) getAppFilePath(item.file.fileName) else getLoadedFilePath(item.file)
           if (filePath != null) {
             val uri = getAppFileUri(filePath.substringAfterLast(File.separator))
-            ProviderMedia.Video(uri, item.file?.fileSource, (item.content.msgContent as MsgContent.MCVideo).image)
-          } else null
+            ProviderMedia.Video(uri, item.file?.fileSource, mc.image)
+          } else previewMedia(mc.image) // not downloaded — show preview frame as a still image
         }
         else -> null
       }

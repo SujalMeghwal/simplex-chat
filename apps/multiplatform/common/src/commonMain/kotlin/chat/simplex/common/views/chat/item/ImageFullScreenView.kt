@@ -54,8 +54,10 @@ fun ImageFullScreenView(imageProvider: () -> ImageGalleryProvider, close: () -> 
   BackHandler(onBack = goBack)
   // Pager doesn't ask previous page at initialization step who knows why. By not doing this, prev page is not checked and can be blank,
   // which makes this blank page visible for a moment. Prevent it by doing the check ourselves
+  // Pager hack for Android only. On desktop we don't use the pager (see below), and calling
+  // scrollToStart() here would mutate the provider's internal index and break direct getMedia().
   LaunchedEffect(Unit) {
-    if (provider.getMedia(provider.initialIndex - 1) == null) {
+    if (appPlatform.isAndroid && provider.getMedia(provider.initialIndex - 1) == null) {
       firstValidPageBeforeScrollingToStart.value = provider.initialIndex
       provider.scrollToStart()
       pagerState.scrollToPage(0)
@@ -197,22 +199,79 @@ fun ImageFullScreenView(imageProvider: () -> ImageGalleryProvider, close: () -> 
       }
     }
   }
+  // Desktop renderer for a single media item at an absolute provider index. No pager dependency:
+  // zoom/pan reset whenever the index changes, and video on the shown page is always "current".
+  @Composable
+  fun DesktopMediaContent(index: Int) {
+    val media = provider.getMedia(index)
+    if (media == null) return
+    Column(
+      Modifier
+        .fillMaxSize()
+        .background(Color.Black)
+        .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = goBack)
+    ) {
+      var scale by remember(index) { mutableStateOf(1f) }
+      var translationX by remember(index) { mutableStateOf(0f) }
+      var translationY by remember(index) { mutableStateOf(0f) }
+      var viewWidth by remember { mutableStateOf(0) }
+      var allowTranslate by remember { mutableStateOf(true) }
+      val modifier = Modifier
+        .onGloballyPositioned { viewWidth = it.size.width }
+        .graphicsLayer(scaleX = scale, scaleY = scale, translationX = translationX, translationY = translationY)
+        .pointerInput(Unit) {
+          detectTransformGestures(
+            { allowTranslate },
+            onGesture = { _, pan, gestureZoom, _ ->
+              scale = (scale * gestureZoom).coerceIn(1f, 20f)
+              allowTranslate = viewWidth * (scale - 1f) - ((translationX + pan.x * scale).absoluteValue * 2) > 0
+              if (scale > 1 && allowTranslate) {
+                translationX += pan.x * scale
+                translationY += pan.y * scale
+              } else if (allowTranslate) {
+                translationX = 0f
+                translationY = 0f
+              }
+            }
+          )
+        }
+        .pointerInput(Unit) {
+          awaitPointerEventScope {
+            while (true) {
+              val event = awaitPointerEvent()
+              if (event.type == PointerEventType.Scroll) {
+                val scrollDelta = event.changes.firstOrNull()?.scrollDelta?.y ?: 0f
+                scale = (scale * (1f - scrollDelta * 0.1f)).coerceIn(1f, 20f)
+                if (scale <= 1f) { scale = 1f; translationX = 0f; translationY = 0f }
+              }
+            }
+          }
+        }
+        .fillMaxSize()
+      if (media is ProviderMedia.Image) {
+        val (data: ByteArray, imageBitmap: ImageBitmap) = media
+        FullScreenImageView(modifier, data, imageBitmap)
+      } else if (media is ProviderMedia.Video) {
+        val preview = remember(media.uri.path) { base64ToBitmap(media.preview) }
+        val uriDecrypted = remember(media.uri.path) { mutableStateOf(if (media.fileSource?.cryptoArgs == null) media.uri else media.fileSource.decryptedGet()) }
+        val decrypted = uriDecrypted.value
+        if (decrypted != null) {
+          VideoView(modifier, decrypted, preview, true, close)
+          DisposableEffect(Unit) { onDispose { playersToRelease.add(decrypted) } }
+        } else if (media.fileSource != null) {
+          VideoViewEncrypted(uriDecrypted, media.fileSource, preview, close)
+        }
+      }
+    }
+  }
   if (appPlatform.isAndroid) {
     HorizontalPager(state = pagerState) { index -> Content(index) }
   } else {
-    // Desktop has no swipe gesture, so navigate between media with left/right arrow keys
+    // Desktop: no swipe. Each media item is a consecutive index in the provider (N = opened item,
+    // N±1 = neighbours), so navigation is just stepping the index and asking the provider for that
+    // media — no pager, no index "recentering" (which was the source of the broken arrows).
     val focusRequester = remember { FocusRequester() }
-    LaunchedEffect(Unit) {
-      focusRequester.requestFocus()
-    }
-    val goToPage = { page: Int ->
-      if (page in 0 until provider.totalMediaSize.value && provider.getMedia(page) != null) {
-        scope.launch { pagerState.scrollToPage(page) }
-        true
-      } else {
-        false
-      }
-    }
+    val curIndex = remember { mutableStateOf(provider.initialIndex) }
     Box(
       Modifier
         .fillMaxSize()
@@ -221,47 +280,19 @@ fun ImageFullScreenView(imageProvider: () -> ImageGalleryProvider, close: () -> 
         .onPreviewKeyEvent { e ->
           if (e.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
           when (e.key) {
-            Key.DirectionLeft -> goToPage(pagerState.currentPage - 1)
-            Key.DirectionRight -> goToPage(pagerState.currentPage + 1)
+            Key.DirectionLeft, Key.DirectionUp ->
+              if (provider.getMedia(curIndex.value - 1) != null) { curIndex.value -= 1; true } else true
+            Key.DirectionRight, Key.DirectionDown ->
+              if (provider.getMedia(curIndex.value + 1) != null) { curIndex.value += 1; true } else true
             Key.Escape -> { goBack(); true }
             else -> false
           }
         }
     ) {
-      Content(pagerState.currentPage)
-      Text(
-        "${pagerState.currentPage + 1} / ${provider.totalMediaSize.value}",
-        modifier = Modifier.align(Alignment.TopStart).padding(12.dp),
-        color = Color.White,
-        fontSize = 14.sp,
-        fontWeight = FontWeight.Medium
-      )
-      if (pagerState.currentPage > 0) {
-        IconButton(
-          onClick = { goToPage(pagerState.currentPage - 1) },
-          modifier = Modifier.align(Alignment.CenterStart).padding(start = 4.dp)
-        ) {
-          Icon(
-            painterResource(MR.images.ic_arrow_back_ios_new),
-            contentDescription = "Previous",
-            modifier = Modifier.size(32.dp),
-            tint = Color.White.copy(alpha = 0.8f)
-          )
-        }
-      }
-      if (pagerState.currentPage < provider.totalMediaSize.value - 1) {
-        IconButton(
-          onClick = { goToPage(pagerState.currentPage + 1) },
-          modifier = Modifier.align(Alignment.CenterEnd).padding(end = 4.dp)
-        ) {
-          Icon(
-            painterResource(MR.images.ic_arrow_forward_ios),
-            contentDescription = "Next",
-            modifier = Modifier.size(32.dp),
-            tint = Color.White.copy(alpha = 0.8f)
-          )
-        }
-      }
+      DesktopMediaContent(curIndex.value)
+    }
+    LaunchedEffect(Unit) {
+      focusRequester.requestFocus()
     }
   }
 }

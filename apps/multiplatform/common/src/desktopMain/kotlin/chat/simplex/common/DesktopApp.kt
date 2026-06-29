@@ -251,21 +251,32 @@ private fun ApplicationScope.handleCloseRequest(closedByError: MutableState<Bool
   val pref = ChatController.appPrefs.closeBehavior
   when (pref.get()) {
     CloseBehavior.Quit -> {
-      withBGApi { chat.simplex.common.views.database.runAutoBackupIfNeeded(chatModel) }
+      runAutoBackupBlocking()
       exitApplication()
     }
     CloseBehavior.MinimizeToTray -> if (trayIsAvailable && singleInstanceLock) {
       simplexWindowState.windowVisible.value = false
     } else {
-      withBGApi { chat.simplex.common.views.database.runAutoBackupIfNeeded(chatModel) }
+      runAutoBackupBlocking()
       exitApplication()
     }
     CloseBehavior.Ask -> if (trayIsAvailable && singleInstanceLock) {
       requestCloseBehavior()
     } else {
       pref.set(CloseBehavior.Quit)
-      withBGApi { chat.simplex.common.views.database.runAutoBackupIfNeeded(chatModel) }
+      runAutoBackupBlocking()
       exitApplication()
+    }
+  }
+}
+
+// Auto-backup must finish *before* the process exits. The previous version launched it on a
+// background coroutine and then called exitApplication() immediately, so the backup was killed
+// mid-flight and never completed. Block here (with a cap so a stuck export can't hang shutdown).
+private fun runAutoBackupBlocking() {
+  kotlinx.coroutines.runBlocking {
+    kotlinx.coroutines.withTimeoutOrNull(60_000) {
+      chat.simplex.common.views.database.runAutoBackupIfNeeded(chatModel)
     }
   }
 }
