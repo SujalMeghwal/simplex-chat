@@ -28,6 +28,8 @@ module Simplex.Chat.Store.Files
     getXFTPRcvFileDBIds,
     updateFileCancelled,
     updateCIFileStatus,
+    updateFileHash,
+    findDuplicateFileName,
     getSharedMsgIdByFileId,
     getFileIdBySharedMsgId,
     getGroupFileIdBySharedMsgId,
@@ -280,6 +282,28 @@ updateCIFileStatus :: MsgDirectionI d => DB.Connection -> User -> Int64 -> CIFil
 updateCIFileStatus db User {userId} fileId ciFileStatus = do
   currentTs <- getCurrentTime
   DB.execute db "UPDATE files SET ci_file_status = ?, updated_at = ? WHERE user_id = ? AND file_id = ?" (ciFileStatus, currentTs, userId, fileId)
+
+-- Local dedup only: SHA-256 of the file's plaintext content (Simplex.Chat.Util.hashFile already
+-- decrypts if the file is encrypted-at-rest). Never touches any protocol path.
+updateFileHash :: DB.Connection -> User -> Int64 -> Text -> IO ()
+updateFileHash db User {userId} fileId fileHash =
+  DB.execute db "UPDATE files SET file_hash = ? WHERE user_id = ? AND file_id = ?" (fileHash, userId, fileId)
+
+-- Local dedup only: name of the earliest other local file with the same hash, if any. Used to
+-- surface an immediate "this looks like a duplicate" notice right when a download completes,
+-- instead of only finding out later in the Duplicates tab.
+findDuplicateFileName :: DB.Connection -> User -> Int64 -> Text -> IO (Maybe Text)
+findDuplicateFileName db User {userId} fileId fileHash =
+  maybeFirstRow fromOnly $
+    DB.query
+      db
+      [sql|
+        SELECT file_name FROM files
+        WHERE user_id = ? AND file_hash = ? AND file_id != ?
+        ORDER BY created_at ASC
+        LIMIT 1
+      |]
+      (userId, fileHash, fileId)
 
 getSharedMsgIdByFileId :: DB.Connection -> UserId -> Int64 -> ExceptT StoreError IO SharedMsgId
 getSharedMsgIdByFileId db userId fileId =

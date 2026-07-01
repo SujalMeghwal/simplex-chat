@@ -654,6 +654,20 @@ processChatCommand vr nm = \case
   APIReorderChatTags tagIds -> withUser $ \user -> do
     withFastStore' $ \db -> reorderChatTags db user $ L.toList tagIds
     ok user
+  APIGetFileVault -> withUser $ \user -> withFastStore' $ \db ->
+    CRFileVault user <$> getFileVault db user
+  APIToggleFileFavorite fileId -> withUser $ \user -> withFastStore' $ \db -> do
+    toggleFileFavorite db fileId
+    CRFileVault user <$> getFileVault db user
+  APIAddFileToCollection fileId name -> withUser $ \user -> withFastStore' $ \db -> do
+    addFileToCollection db user name fileId
+    CRFileVault user <$> getFileVault db user
+  APIRemoveFileFromCollection fileId name -> withUser $ \user -> withFastStore' $ \db -> do
+    removeFileFromCollection db user name fileId
+    CRFileVault user <$> getFileVault db user
+  APIDeleteFileCollection name -> withUser $ \user -> withFastStore' $ \db -> do
+    deleteFileCollection db user name
+    CRFileVault user <$> getFileVault db user
   APICreateChatItems folderId cms -> withUser $ \user -> do
     forM_ cms $ \cm -> assertAllowedContent' cm >> assertNoMentions cm
     createNoteFolderContentItems user folderId (L.map composedMessageReq cms)
@@ -4987,6 +5001,11 @@ chatCommandP =
       "/_delete tag " *> (APIDeleteChatTag <$> A.decimal),
       "/_update tag " *> (APIUpdateChatTag <$> A.decimal <* A.space <*> jsonP),
       "/_reorder tags " *> (APIReorderChatTags <$> strP),
+      "/_get file vault" $> APIGetFileVault,
+      "/_favorite file " *> (APIToggleFileFavorite <$> A.decimal),
+      "/_add file " *> (APIAddFileToCollection <$> A.decimal <* " to collection " <*> textP),
+      "/_remove file " *> (APIRemoveFileFromCollection <$> A.decimal <* " from collection " <*> textP),
+      "/_delete file collection " *> (APIDeleteFileCollection <$> textP),
       "/_create *" *> (APICreateChatItems <$> A.decimal <*> (" json " *> jsonP <|> " text " *> composedMessagesTextP)),
       "/_report #" *> (APIReportMessage <$> A.decimal <* A.space <*> A.decimal <*> (" reason=" *> strP) <*> (A.space *> textP <|> pure "")),
       "/report #" *> (ReportMessage <$> displayNameP <*> optional (" @" *> displayNameP) <*> _strP <* A.space <*> msgTextP),

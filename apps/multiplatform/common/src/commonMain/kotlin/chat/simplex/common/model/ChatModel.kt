@@ -5172,6 +5172,20 @@ data class ChatTag(
   val chatTagEmoji: String?
 )
 
+// Local-device-only download manager state (favorites/collections). Mirrors Haskell FileVault /
+// FileCollectionEntry (Types.hs) -- never sent over SMP/XFTP, never part of sync/export.
+@Serializable
+data class FileCollectionEntry(
+  val collectionName: String,
+  val fileIds: List<Long>
+)
+
+@Serializable
+data class FileVaultData(
+  val favoriteFileIds: List<Long>,
+  val fileCollections: List<FileCollectionEntry>
+)
+
 @Serializable
 class ChatItemInfo(
   val itemVersions: List<ChatItemVersion>,

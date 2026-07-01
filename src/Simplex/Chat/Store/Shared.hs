@@ -866,6 +866,77 @@ getUserChatTags db User {userId} =
     toChatTag :: (ChatTagId, Maybe Text, Text) -> ChatTag
     toChatTag (chatTagId, chatTagEmoji, chatTagText) = ChatTag {chatTagId, chatTagEmoji, chatTagText}
 
+-- Local-device-only file favorites/collections (never touches SMP/XFTP, never synced/exported).
+-- local_file_favorites/local_file_collections(_members) have no direct user scoping column, so
+-- favorites/collections are always filtered/joined through files.user_id to keep them scoped to
+-- the active profile when a database is shared by multiple users.
+
+toggleFileFavorite :: DB.Connection -> Int64 -> IO ()
+toggleFileFavorite db fId = do
+  rows <- DB.query db "SELECT 1 FROM local_file_favorites WHERE file_id = ?" (Only fId) :: IO [Only Int]
+  if null rows
+    then DB.execute db "INSERT INTO local_file_favorites (file_id) VALUES (?)" (Only fId)
+    else DB.execute db "DELETE FROM local_file_favorites WHERE file_id = ?" (Only fId)
+
+getFavoriteFileIds :: DB.Connection -> User -> IO [Int64]
+getFavoriteFileIds db User {userId} =
+  map fromOnly
+    <$> DB.query
+      db
+      [sql|
+        SELECT lf.file_id
+        FROM local_file_favorites lf
+        JOIN files f ON f.file_id = lf.file_id
+        WHERE f.user_id = ?
+      |]
+      (Only userId)
+
+getOrCreateFileCollection :: DB.Connection -> User -> Text -> IO Int64
+getOrCreateFileCollection db User {userId} name = do
+  cId_ <-
+    maybeFirstRow fromOnly $
+      DB.query db "SELECT collection_id FROM local_file_collections WHERE user_id = ? AND collection_name = ?" (userId, name)
+  case cId_ of
+    Just cId -> pure cId
+    Nothing -> do
+      DB.execute db "INSERT INTO local_file_collections (user_id, collection_name) VALUES (?,?)" (userId, name)
+      insertedRowId db
+
+deleteFileCollection :: DB.Connection -> User -> Text -> IO ()
+deleteFileCollection db User {userId} name =
+  DB.execute db "DELETE FROM local_file_collections WHERE user_id = ? AND collection_name = ?" (userId, name)
+
+addFileToCollection :: DB.Connection -> User -> Text -> Int64 -> IO ()
+addFileToCollection db user name fId = do
+  cId <- getOrCreateFileCollection db user name
+  DB.execute db "INSERT OR IGNORE INTO local_file_collection_members (collection_id, file_id) VALUES (?,?)" (cId, fId)
+
+removeFileFromCollection :: DB.Connection -> User -> Text -> Int64 -> IO ()
+removeFileFromCollection db User {userId} name fId =
+  DB.execute
+    db
+    [sql|
+      DELETE FROM local_file_collection_members
+      WHERE file_id = ? AND collection_id IN (
+        SELECT collection_id FROM local_file_collections WHERE user_id = ? AND collection_name = ?
+      )
+    |]
+    (fId, userId, name)
+
+getFileVault :: DB.Connection -> User -> IO FileVault
+getFileVault db user@User {userId} = do
+  favoriteFileIds <- getFavoriteFileIds db user
+  cols <-
+    DB.query
+      db
+      "SELECT collection_id, collection_name FROM local_file_collections WHERE user_id = ? ORDER BY collection_name"
+      (Only userId) ::
+      IO [(Int64, Text)]
+  fileCollections <- forM cols $ \(cId, collectionName) -> do
+    fileIds <- map fromOnly <$> DB.query db "SELECT file_id FROM local_file_collection_members WHERE collection_id = ?" (Only cId)
+    pure FileCollectionEntry {collectionName, fileIds}
+  pure FileVault {favoriteFileIds, fileCollections}
+
 getGroupChatTags :: DB.Connection -> GroupId -> IO [ChatTagId]
 getGroupChatTags db groupId =
   map fromOnly <$> DB.query db "SELECT chat_tag_id FROM chat_tags_chats WHERE group_id = ?" (Only groupId)

@@ -111,6 +111,12 @@ fun SettingsLayout(
 
     SectionView(stringResource(MR.strings.settings_section_title_chat_database)) {
       DatabaseItem(encrypted, passphraseSaved, showSettingsModal { DatabaseView() }, stopped)
+      SettingsActionItem(
+        painterResource(MR.images.ic_download),
+        "Download manager",
+        { ModalManager.fullscreen.showCustomModal { close -> chat.simplex.common.views.downloads.DownloadManagerView(close) } },
+        disabled = stopped
+      )
       SectionItemView(
         click = if (stopped) null else ({ withAuth(generalGetString(MR.strings.auth_open_migration_to_another_device), generalGetString(MR.strings.auth_log_in_using_credential)) { ModalManager.fullscreen.showCustomModal { close -> MigrateFromDeviceView(close) } } }),
         disabled = stopped

@@ -67,6 +67,7 @@ import Simplex.Chat.Types
 import Simplex.Chat.Types.MemberRelations
 import Simplex.Chat.Types.Preferences
 import Simplex.Chat.Types.Shared
+import Simplex.Chat.Util (hashFile)
 import Simplex.FileTransfer.Description (ValidFileDescription)
 import qualified Simplex.FileTransfer.Description as FD
 import Simplex.FileTransfer.Protocol (FilePartyI)
@@ -323,13 +324,19 @@ processAgentMsgRcvFile _corrId aFileId msg = do
             Just targetPath -> do
               fsTargetPath <- lift $ toFSFilePath targetPath
               renameFile xftpPath fsTargetPath
+              let RcvFileTransfer {cryptoArgs = ftCryptoArgs} = ft
+              fileHash_ <- liftIO $ either (const Nothing) Just <$> runExceptT (hashFile fsTargetPath ftCryptoArgs)
               ci_ <- withStore $ \db -> do
                 liftIO $ do
                   updateRcvFileStatus db fileId FSComplete
                   updateCIFileStatus db user fileId CIFSRcvComplete
+                  forM_ fileHash_ $ updateFileHash db user fileId
                 lookupChatItemByFileId db vr user fileId
               agentXFTPDeleteRcvFile aFileId fileId
               toView $ maybe (CEvtRcvStandaloneFileComplete user fsTargetPath ft) (CEvtRcvFileComplete user) ci_
+              forM_ ((,) <$> ci_ <*> fileHash_) $ \(ci, h) -> do
+                dupName_ <- withStore' $ \db -> findDuplicateFileName db user fileId h
+                forM_ dupName_ $ \dupName -> toView $ CEvtRcvFileDuplicate user ci dupName
         RFWARN e -> do
           ci <- withStore $ \db -> do
             liftIO $ updateCIFileStatus db user fileId (CIFSRcvWarning $ agentFileError e)
@@ -1308,13 +1315,25 @@ processAgentMessageConn vr user@User {userId} corrId agentConnId agentMessage = 
               then badRcvFileChunk ft "incorrect chunk size"
               else do
                 appendFileChunk ft chunkNo chunk True
+                let RcvFileTransfer {cryptoArgs = ftCryptoArgs, fileStatus = ftFileStatus} = ft
+                    hashCompletedRcvFile filePath = do
+                      fsFilePath <- lift $ toFSFilePath filePath
+                      liftIO $ either (const Nothing) Just <$> runExceptT (hashFile fsFilePath ftCryptoArgs)
+                fileHash_ <- case ftFileStatus of
+                  RFSConnected filePath -> hashCompletedRcvFile filePath
+                  RFSAccepted filePath -> hashCompletedRcvFile filePath
+                  _ -> pure Nothing
                 ci <- withStore $ \db -> do
                   liftIO $ do
                     updateRcvFileStatus db fileId FSComplete
                     updateCIFileStatus db user fileId CIFSRcvComplete
+                    forM_ fileHash_ $ updateFileHash db user fileId
                     deleteRcvFileChunks db ft
                   getChatItemByFileId db vr user fileId
                 toView $ CEvtRcvFileComplete user ci
+                forM_ fileHash_ $ \h -> do
+                  dupName_ <- withStore' $ \db -> findDuplicateFileName db user fileId h
+                  forM_ dupName_ $ \dupName -> toView $ CEvtRcvFileDuplicate user ci dupName
                 mapM_ (deleteAgentConnectionAsync . aConnId) conn_
           RcvChunkDuplicate -> withAckMessage' "file msg" agentConnId meta $ pure ()
           RcvChunkError -> badRcvFileChunk ft $ "incorrect chunk number " <> show chunkNo

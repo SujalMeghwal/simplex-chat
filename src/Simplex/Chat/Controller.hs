@@ -334,6 +334,13 @@ data ChatCommand
   | APIDeleteChatTag ChatTagId
   | APIUpdateChatTag ChatTagId ChatTagData
   | APIReorderChatTags (NonEmpty ChatTagId)
+  -- Local-device-only download manager state (favorites/collections) -- never touches
+  -- SMP/XFTP/agent protocol, purely a local_file_favorites/local_file_collections read/write.
+  | APIGetFileVault
+  | APIToggleFileFavorite FileTransferId
+  | APIAddFileToCollection FileTransferId Text
+  | APIRemoveFileFromCollection FileTransferId Text
+  | APIDeleteFileCollection Text
   | APICreateChatItems {noteFolderId :: NoteFolderId, composedMessages :: NonEmpty ComposedMessage}
   | APIReportMessage {groupId :: GroupId, chatItemId :: ChatItemId, reportReason :: ReportReason, reportText :: Text}
   | ReportMessage {groupName :: GroupName, contactName_ :: Maybe ContactName, reportReason :: ReportReason, reportedMessage :: Text}
@@ -722,6 +729,7 @@ data ChatResponse
   | CRGroupMemberCode {user :: User, groupInfo :: GroupInfo, member :: GroupMember, connectionCode :: Text}
   | CRConnectionVerified {user :: User, verified :: Bool, expectedCode :: Text}
   | CRTagsUpdated {user :: User, userTags :: [ChatTag], chatTags :: [ChatTagId]}
+  | CRFileVault {user :: User, fileVault :: FileVault}
   | CRNewChatItems {user :: User, chatItems :: [AChatItem]}
   | CRChatItemUpdated {user :: User, chatItem :: AChatItem}
   | CRChatItemNotChanged {user :: User, chatItem :: AChatItem}
@@ -875,6 +883,9 @@ data ChatEvent
   | CEvtRcvFileStart {user :: User, chatItem :: AChatItem} -- sent by chats
   | CEvtRcvFileProgressXFTP {user :: User, chatItem_ :: Maybe AChatItem, receivedSize :: Int64, totalSize :: Int64, rcvFileTransfer :: RcvFileTransfer}
   | CEvtRcvFileComplete {user :: User, chatItem :: AChatItem}
+  -- Local dedup only: fired right after a download completes if its content hash matches an
+  -- existing local file. Purely informational -- never affects the transfer itself.
+  | CEvtRcvFileDuplicate {user :: User, chatItem :: AChatItem, duplicateOfFileName :: Text}
   | CEvtRcvStandaloneFileComplete {user :: User, targetPath :: FilePath, rcvFileTransfer :: RcvFileTransfer}
   | CEvtRcvFileSndCancelled {user :: User, chatItem :: AChatItem, rcvFileTransfer :: RcvFileTransfer}
   | CEvtRcvFileError {user :: User, chatItem_ :: Maybe AChatItem, agentError :: AgentErrorType, rcvFileTransfer :: RcvFileTransfer}

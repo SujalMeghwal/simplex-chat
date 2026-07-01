@@ -2002,6 +2002,21 @@ data ChatTag = ChatTag
   }
   deriving (Show)
 
+-- Local-device-only download manager state: favorited file ids and named collections of file ids.
+-- Never sent over SMP/XFTP, never part of the sync/export protocol -- purely a client convenience
+-- view over local_file_favorites / local_file_collections(_members) tables.
+data FileCollectionEntry = FileCollectionEntry
+  { collectionName :: Text,
+    fileIds :: [Int64]
+  }
+  deriving (Show)
+
+data FileVault = FileVault
+  { favoriteFileIds :: [Int64],
+    fileCollections :: [FileCollectionEntry]
+  }
+  deriving (Show)
+
 -- ad-hoc type for data required for XGrpMemIntro continuation
 data XGrpMemIntroCont = XGrpMemIntroCont
   { groupId :: GroupId,
@@ -2206,3 +2221,7 @@ $(JQ.deriveJSON defaultJSON ''ContactRef)
 $(JQ.deriveJSON defaultJSON ''NoteFolder)
 
 $(JQ.deriveJSON defaultJSON ''ChatTag)
+
+$(JQ.deriveJSON defaultJSON ''FileCollectionEntry)
+
+$(JQ.deriveJSON defaultJSON ''FileVault)

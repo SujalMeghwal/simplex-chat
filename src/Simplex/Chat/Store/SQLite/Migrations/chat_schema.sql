@@ -266,7 +266,9 @@ CREATE TABLE files(
   file_crypto_key BLOB,
   file_crypto_nonce BLOB,
   note_folder_id INTEGER DEFAULT NULL REFERENCES note_folders ON DELETE CASCADE,
-  redirect_file_id INTEGER REFERENCES files ON DELETE CASCADE
+  redirect_file_id INTEGER REFERENCES files ON DELETE CASCADE,
+  file_hash TEXT,
+  file_mime TEXT
 ) STRICT;
 CREATE TABLE snd_files(
   file_id INTEGER NOT NULL REFERENCES files ON DELETE CASCADE,
@@ -1339,3 +1341,29 @@ BEGIN
         )
     WHERE group_id = NEW.group_id;
 END;
+CREATE INDEX idx_files_file_hash ON files (user_id, file_hash);
+CREATE INDEX idx_files_file_name ON files (user_id, file_name);
+CREATE TABLE local_file_collections (
+  collection_id INTEGER PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,
+  collection_name TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+) STRICT;
+CREATE TABLE local_file_collection_members (
+  collection_id INTEGER NOT NULL REFERENCES local_file_collections ON DELETE CASCADE,
+  file_id INTEGER NOT NULL REFERENCES files ON DELETE CASCADE,
+  added_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (collection_id, file_id)
+) WITHOUT ROWID, STRICT;
+CREATE TABLE local_file_favorites (
+  file_id INTEGER PRIMARY KEY REFERENCES files ON DELETE CASCADE,
+  favorited_at TEXT NOT NULL DEFAULT (datetime('now'))
+) STRICT;
+CREATE TABLE local_download_stats (
+  stat_date TEXT NOT NULL,
+  user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,
+  files_downloaded INTEGER NOT NULL DEFAULT 0,
+  bytes_downloaded INTEGER NOT NULL DEFAULT 0,
+  bytes_deduped INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (stat_date, user_id)
+) WITHOUT ROWID, STRICT;

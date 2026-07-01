@@ -2,9 +2,10 @@
 {-# LANGUAGE InstanceSigs #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE TupleSections #-}
+{-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -Wno-orphans #-}
 
-module Simplex.Chat.Util (week, encryptFile, chunkSize, liftIOEither, shuffle, zipWith3') where
+module Simplex.Chat.Util (week, encryptFile, hashFile, chunkSize, liftIOEither, shuffle, zipWith3') where
 
 import Control.Exception (Exception)
 import Control.Monad
@@ -12,11 +13,17 @@ import Control.Monad.Except
 import Control.Monad.IO.Class
 import Control.Monad.IO.Unlift (MonadUnliftIO (..))
 import Control.Monad.Reader
+import Crypto.Hash (SHA256)
+import qualified Crypto.Hash as CH
 import Data.Bifunctor (first)
+import Data.ByteArray.Encoding (Base (Base16), convertToBase)
+import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as LB
 import Data.List (sortBy)
 import Data.List.NonEmpty (NonEmpty (..))
 import Data.Ord (comparing)
+import Data.Text (Text)
+import Data.Text.Encoding (decodeLatin1)
 import Data.Time (NominalDiffTime)
 import Data.Word (Word16)
 import Simplex.Messaging.Crypto.File (CryptoFile (..), CryptoFileArgs (..))
@@ -42,6 +49,16 @@ encryptFile fromPath toPath cfArgs = do
       ch <- liftIO $ LB.hGet r chunkSize
       unless (LB.null ch) $ liftIO $ CF.hPut w ch
       unless (LB.length ch < chunkSize) $ encryptChunks r w
+
+-- SHA-256 of a file's plaintext content, used only for local dedup (file_hash column) -- never
+-- transmitted, never part of any protocol message. CF.readFile transparently decrypts when
+-- cfArgs is Just, so this always hashes content, not ciphertext, regardless of whether
+-- privacyEncryptLocalFiles is on.
+hashFile :: FilePath -> Maybe CryptoFileArgs -> ExceptT String IO Text
+hashFile path cfArgs = do
+  content <- withExceptT show $ CF.readFile (CryptoFile path cfArgs)
+  let digest = CH.hashFinalize $ CH.hashUpdates (CH.hashInit @SHA256) (LB.toChunks content)
+  pure . decodeLatin1 $ (convertToBase Base16 digest :: BS.ByteString)
 
 chunkSize :: Num a => a
 chunkSize = 65536

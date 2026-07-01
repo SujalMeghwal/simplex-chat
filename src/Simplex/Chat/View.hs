@@ -155,6 +155,7 @@ chatResponseToView hu cfg@ChatConfig {logLevel, showReactions, testView} liveIte
   CRChatItemUpdated u (AChatItem _ _ chat item) -> ttyUser u $ unmuted u chat item $ viewItemUpdate chat item liveItems ts tz
   CRChatItemNotChanged u ci -> ttyUser u $ viewItemNotChanged ci
   CRTagsUpdated u _ _ -> ttyUser u ["chat tags updated"]
+  CRFileVault u vault -> ttyUser u [viewJSON vault]
   CRChatItemsDeleted u deletions byUser timed -> ttyUser u $ viewChatItemsDeleted (unmuted u) deletions byUser timed ts tz testView
   CRGroupChatItemsDeleted u g ciIds byUser member_ -> ttyUser u $ viewGroupChatItemsDeleted g ciIds byUser member_
   CRChatItemReaction u added (ACIReaction _ _ chat reaction) -> ttyUser u $ unmutedReaction u chat reaction $ viewItemReaction showReactions chat reaction added ts tz
@@ -455,6 +456,7 @@ chatEventToView hu ChatConfig {logLevel, showReactions, showReceipts, testView} 
   CEvtReceivedContactRequest u UserContactRequest {localDisplayName = c, profile} _chat -> ttyUser u $ viewReceivedContactRequest c profile
   CEvtRcvFileStart u ci -> ttyUser u $ receivingFile_' hu testView "started" ci
   CEvtRcvFileComplete u ci -> ttyUser u $ receivingFile_' hu testView "completed" ci
+  CEvtRcvFileDuplicate u ci dupName -> ttyUser u $ receivingFile_' hu testView ("completed (duplicate of " <> T.unpack dupName <> ")") ci
   CEvtRcvStandaloneFileComplete u _ ft -> ttyUser u $ receivingFileStandalone "completed" ft
   CEvtRcvFileSndCancelled u _ ft -> ttyUser u $ viewRcvFileSndCancelled ft
   CEvtRcvFileError u (Just ci) e _ -> ttyUser u $ receivingFile_' hu testView "error" ci <> [sShow e]

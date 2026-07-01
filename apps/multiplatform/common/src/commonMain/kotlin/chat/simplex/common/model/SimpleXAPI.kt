@@ -1100,6 +1100,43 @@ object ChatController {
 
   suspend fun apiReorderChatTags(rh: Long?, tagIds: List<Long>) = sendCommandOkResp(rh, CC.ApiReorderChatTags(tagIds))
 
+  // Local-device-only download manager state (favorites/collections) -- persisted in chat.db,
+  // same encryption tier as the rest of the local database, never sent over any protocol.
+  suspend fun apiGetFileVault(rh: Long?): FileVaultData? {
+    val r = sendCmd(rh, CC.ApiGetFileVault())
+    if (r is API.Result && r.res is CR.FileVault) return r.res.fileVault
+    Log.e(TAG, "apiGetFileVault bad response: ${r.responseType} ${r.details}")
+    return null
+  }
+
+  suspend fun apiToggleFileFavorite(rh: Long?, fileId: Long): FileVaultData? {
+    val r = sendCmd(rh, CC.ApiToggleFileFavorite(fileId))
+    if (r is API.Result && r.res is CR.FileVault) return r.res.fileVault
+    Log.e(TAG, "apiToggleFileFavorite bad response: ${r.responseType} ${r.details}")
+    return null
+  }
+
+  suspend fun apiAddFileToCollection(rh: Long?, fileId: Long, collectionName: String): FileVaultData? {
+    val r = sendCmd(rh, CC.ApiAddFileToCollection(fileId, collectionName))
+    if (r is API.Result && r.res is CR.FileVault) return r.res.fileVault
+    Log.e(TAG, "apiAddFileToCollection bad response: ${r.responseType} ${r.details}")
+    return null
+  }
+
+  suspend fun apiRemoveFileFromCollection(rh: Long?, fileId: Long, collectionName: String): FileVaultData? {
+    val r = sendCmd(rh, CC.ApiRemoveFileFromCollection(fileId, collectionName))
+    if (r is API.Result && r.res is CR.FileVault) return r.res.fileVault
+    Log.e(TAG, "apiRemoveFileFromCollection bad response: ${r.responseType} ${r.details}")
+    return null
+  }
+
+  suspend fun apiDeleteFileCollection(rh: Long?, collectionName: String): FileVaultData? {
+    val r = sendCmd(rh, CC.ApiDeleteFileCollection(collectionName))
+    if (r is API.Result && r.res is CR.FileVault) return r.res.fileVault
+    Log.e(TAG, "apiDeleteFileCollection bad response: ${r.responseType} ${r.details}")
+    return null
+  }
+
   suspend fun apiSendMessages(rh: Long?, type: ChatType, id: Long, scope: GroupChatScope?, sendAsGroup: Boolean = false, live: Boolean = false, ttl: Int? = null, composedMessages: List<ComposedMessage>): List<AChatItem>? {
     val cmd = CC.ApiSendMessages(type, id, scope, sendAsGroup, live, ttl, composedMessages)
     return processSendMessageCmd(rh, cmd)
@@ -3091,6 +3128,10 @@ object ChatController {
         chatItemSimpleUpdate(rhId, r.user, r.chatItem)
       is CR.RcvFileComplete ->
         chatItemSimpleUpdate(rhId, r.user, r.chatItem)
+      is CR.RcvFileDuplicate -> {
+        chatItemSimpleUpdate(rhId, r.user, r.chatItem)
+        showToast("Possible duplicate of \"${r.duplicateOfFileName}\"")
+      }
       is CR.RcvFileSndCancelled -> {
         chatItemSimpleUpdate(rhId, r.user, r.chatItem)
         cleanupFile(r.chatItem)
@@ -3685,6 +3726,12 @@ sealed class CC {
   class ApiDeleteChatTag(val tagId: Long): CC()
   class ApiUpdateChatTag(val tagId: Long, val tagData: ChatTagData): CC()
   class ApiReorderChatTags(val tagIds: List<Long>): CC()
+  // Local-device-only download manager state (favorites/collections) -- never leaves this device.
+  class ApiGetFileVault: CC()
+  class ApiToggleFileFavorite(val fileId: Long): CC()
+  class ApiAddFileToCollection(val fileId: Long, val collectionName: String): CC()
+  class ApiRemoveFileFromCollection(val fileId: Long, val collectionName: String): CC()
+  class ApiDeleteFileCollection(val collectionName: String): CC()
   class ApiCreateChatItems(val noteFolderId: Long, val composedMessages: List<ComposedMessage>): CC()
   class ApiReportMessage(val groupId: Long, val chatItemId: Long, val reportReason: ReportReason, val reportText: String): CC()
   class ApiUpdateChatItem(val type: ChatType, val id: Long, val scope: GroupChatScope?, val itemId: Long, val updatedMessage: UpdatedMessage, val live: Boolean): CC()
@@ -3880,6 +3927,11 @@ sealed class CC {
     is ApiDeleteChatTag -> "/_delete tag $tagId"
     is ApiUpdateChatTag -> "/_update tag $tagId ${json.encodeToString(tagData)}"
     is ApiReorderChatTags -> "/_reorder tags ${tagIds.joinToString(",")}"
+    is ApiGetFileVault -> "/_get file vault"
+    is ApiToggleFileFavorite -> "/_favorite file $fileId"
+    is ApiAddFileToCollection -> "/_add file $fileId to collection $collectionName"
+    is ApiRemoveFileFromCollection -> "/_remove file $fileId from collection $collectionName"
+    is ApiDeleteFileCollection -> "/_delete file collection $collectionName"
     is ApiCreateChatItems -> {
       val msgs = json.encodeToString(composedMessages)
       "/_create *$noteFolderId json $msgs"
@@ -4074,6 +4126,11 @@ sealed class CC {
     is ApiDeleteChatTag -> "apiDeleteChatTag"
     is ApiUpdateChatTag -> "apiUpdateChatTag"
     is ApiReorderChatTags -> "apiReorderChatTags"
+    is ApiGetFileVault -> "apiGetFileVault"
+    is ApiToggleFileFavorite -> "apiToggleFileFavorite"
+    is ApiAddFileToCollection -> "apiAddFileToCollection"
+    is ApiRemoveFileFromCollection -> "apiRemoveFileFromCollection"
+    is ApiDeleteFileCollection -> "apiDeleteFileCollection"
     is ApiCreateChatItems -> "apiCreateChatItems"
     is ApiReportMessage -> "apiReportMessage"
     is ApiUpdateChatItem -> "apiUpdateChatItem"
@@ -6386,6 +6443,7 @@ sealed class CR {
   @Serializable @SerialName("groupMemberCode") class GroupMemberCode(val user: UserRef, val groupInfo: GroupInfo, val member: GroupMember, val connectionCode: String): CR()
   @Serializable @SerialName("connectionVerified") class ConnectionVerified(val user: UserRef, val verified: Boolean, val expectedCode: String): CR()
   @Serializable @SerialName("tagsUpdated") class TagsUpdated(val user: UserRef, val userTags: List<ChatTag>, val chatTags: List<Long>): CR()
+  @Serializable @SerialName("fileVault") class FileVault(val user: UserRef, val fileVault: FileVaultData): CR()
   @Serializable @SerialName("invitation") class Invitation(val user: UserRef, val connLinkInvitation: CreatedConnLink, val connection: PendingContactConnection): CR()
   @Serializable @SerialName("connectionIncognitoUpdated") class ConnectionIncognitoUpdated(val user: UserRef, val toConnection: PendingContactConnection): CR()
   @Serializable @SerialName("connectionUserChanged") class ConnectionUserChanged(val user: UserRef, val fromConnection: PendingContactConnection, val toConnection: PendingContactConnection, val newUser: UserRef): CR()
@@ -6484,6 +6542,7 @@ sealed class CR {
   @Serializable @SerialName("rcvFileStart") class RcvFileStart(val user: UserRef, val chatItem: AChatItem): CR() // send by chats
   @Serializable @SerialName("rcvFileProgressXFTP") class RcvFileProgressXFTP(val user: UserRef, val chatItem_: AChatItem?, val receivedSize: Long, val totalSize: Long, val rcvFileTransfer: RcvFileTransfer): CR()
   @Serializable @SerialName("rcvFileComplete") class RcvFileComplete(val user: UserRef, val chatItem: AChatItem): CR()
+  @Serializable @SerialName("rcvFileDuplicate") class RcvFileDuplicate(val user: UserRef, val chatItem: AChatItem, val duplicateOfFileName: String): CR()
   @Serializable @SerialName("rcvStandaloneFileComplete") class RcvStandaloneFileComplete(val user: UserRef, val targetPath: String, val rcvFileTransfer: RcvFileTransfer): CR()
   @Serializable @SerialName("rcvFileCancelled") class RcvFileCancelled(val user: UserRef, val chatItem_: AChatItem?, val rcvFileTransfer: RcvFileTransfer): CR()
   @Serializable @SerialName("rcvFileSndCancelled") class RcvFileSndCancelled(val user: UserRef, val chatItem: AChatItem, val rcvFileTransfer: RcvFileTransfer): CR()
@@ -6578,6 +6637,7 @@ sealed class CR {
     is GroupMemberCode -> "groupMemberCode"
     is ConnectionVerified -> "connectionVerified"
     is TagsUpdated -> "tagsUpdated"
+    is FileVault -> "fileVault"
     is Invitation -> "invitation"
     is ConnectionIncognitoUpdated -> "connectionIncognitoUpdated"
     is ConnectionUserChanged -> "ConnectionUserChanged"
@@ -6673,6 +6733,7 @@ sealed class CR {
     is RcvFileAccepted -> "rcvFileAccepted"
     is RcvFileStart -> "rcvFileStart"
     is RcvFileComplete -> "rcvFileComplete"
+    is RcvFileDuplicate -> "rcvFileDuplicate"
     is RcvStandaloneFileComplete -> "rcvStandaloneFileComplete"
     is RcvFileCancelled -> "rcvFileCancelled"
     is SndStandaloneFileCreated -> "sndStandaloneFileCreated"
@@ -6762,6 +6823,7 @@ sealed class CR {
     is GroupMemberCode -> withUser(user, "groupInfo: ${json.encodeToString(groupInfo)}\nmember: ${json.encodeToString(member)}\nconnectionCode: $connectionCode")
     is ConnectionVerified -> withUser(user, "verified: $verified\nconnectionCode: $expectedCode")
     is TagsUpdated -> withUser(user, "userTags: ${json.encodeToString(userTags)}\nchatTags: ${json.encodeToString(chatTags)}")
+    is FileVault -> withUser(user, json.encodeToString(fileVault))
     is Invitation -> withUser(user, "connLinkInvitation: ${json.encodeToString(connLinkInvitation)}\nconnection: $connection")
     is ConnectionIncognitoUpdated -> withUser(user, json.encodeToString(toConnection))
     is ConnectionUserChanged -> withUser(user, "fromConnection: ${json.encodeToString(fromConnection)}\ntoConnection: ${json.encodeToString(toConnection)}\nnewUser: ${json.encodeToString(newUser)}" )
@@ -6857,6 +6919,7 @@ sealed class CR {
     is RcvFileAccepted -> withUser(user, json.encodeToString(chatItem))
     is RcvFileStart -> withUser(user, json.encodeToString(chatItem))
     is RcvFileComplete -> withUser(user, json.encodeToString(chatItem))
+    is RcvFileDuplicate -> withUser(user, json.encodeToString(chatItem))
     is RcvFileCancelled -> withUser(user, json.encodeToString(chatItem_))
     is RcvFileSndCancelled -> withUser(user, json.encodeToString(chatItem))
     is RcvFileProgressXFTP -> withUser(user, "chatItem: ${json.encodeToString(chatItem_)}\nreceivedSize: $receivedSize\ntotalSize: $totalSize")
