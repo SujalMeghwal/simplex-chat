@@ -1137,6 +1137,27 @@ object ChatController {
     return null
   }
 
+  suspend fun apiGetChatStorageBudgets(rh: Long?): List<ChatStorageBudget>? {
+    val r = sendCmd(rh, CC.ApiGetChatStorageBudgets())
+    if (r is API.Result && r.res is CR.ChatStorageBudgets) return r.res.storageBudgets
+    Log.e(TAG, "apiGetChatStorageBudgets bad response: ${r.responseType} ${r.details}")
+    return null
+  }
+
+  suspend fun apiSetChatStorageBudget(rh: Long?, type: ChatType, id: Long, budgetBytes: Long): List<ChatStorageBudget>? {
+    val r = sendCmd(rh, CC.ApiSetChatStorageBudget(type, id, budgetBytes))
+    if (r is API.Result && r.res is CR.ChatStorageBudgets) return r.res.storageBudgets
+    Log.e(TAG, "apiSetChatStorageBudget bad response: ${r.responseType} ${r.details}")
+    return null
+  }
+
+  suspend fun apiClearChatStorageBudget(rh: Long?, type: ChatType, id: Long): List<ChatStorageBudget>? {
+    val r = sendCmd(rh, CC.ApiClearChatStorageBudget(type, id))
+    if (r is API.Result && r.res is CR.ChatStorageBudgets) return r.res.storageBudgets
+    Log.e(TAG, "apiClearChatStorageBudget bad response: ${r.responseType} ${r.details}")
+    return null
+  }
+
   suspend fun apiSendMessages(rh: Long?, type: ChatType, id: Long, scope: GroupChatScope?, sendAsGroup: Boolean = false, live: Boolean = false, ttl: Int? = null, composedMessages: List<ComposedMessage>): List<AChatItem>? {
     val cmd = CC.ApiSendMessages(type, id, scope, sendAsGroup, live, ttl, composedMessages)
     return processSendMessageCmd(rh, cmd)
@@ -3732,6 +3753,9 @@ sealed class CC {
   class ApiAddFileToCollection(val fileId: Long, val collectionName: String): CC()
   class ApiRemoveFileFromCollection(val fileId: Long, val collectionName: String): CC()
   class ApiDeleteFileCollection(val collectionName: String): CC()
+  class ApiGetChatStorageBudgets: CC()
+  class ApiSetChatStorageBudget(val type: ChatType, val id: Long, val budgetBytes: Long): CC()
+  class ApiClearChatStorageBudget(val type: ChatType, val id: Long): CC()
   class ApiCreateChatItems(val noteFolderId: Long, val composedMessages: List<ComposedMessage>): CC()
   class ApiReportMessage(val groupId: Long, val chatItemId: Long, val reportReason: ReportReason, val reportText: String): CC()
   class ApiUpdateChatItem(val type: ChatType, val id: Long, val scope: GroupChatScope?, val itemId: Long, val updatedMessage: UpdatedMessage, val live: Boolean): CC()
@@ -3932,6 +3956,9 @@ sealed class CC {
     is ApiAddFileToCollection -> "/_add file $fileId to collection $collectionName"
     is ApiRemoveFileFromCollection -> "/_remove file $fileId from collection $collectionName"
     is ApiDeleteFileCollection -> "/_delete file collection $collectionName"
+    is ApiGetChatStorageBudgets -> "/_get storage budgets"
+    is ApiSetChatStorageBudget -> "/_set storage budget ${chatRef(type, id, scope = null)} $budgetBytes"
+    is ApiClearChatStorageBudget -> "/_clear storage budget ${chatRef(type, id, scope = null)}"
     is ApiCreateChatItems -> {
       val msgs = json.encodeToString(composedMessages)
       "/_create *$noteFolderId json $msgs"
@@ -4131,6 +4158,9 @@ sealed class CC {
     is ApiAddFileToCollection -> "apiAddFileToCollection"
     is ApiRemoveFileFromCollection -> "apiRemoveFileFromCollection"
     is ApiDeleteFileCollection -> "apiDeleteFileCollection"
+    is ApiGetChatStorageBudgets -> "apiGetChatStorageBudgets"
+    is ApiSetChatStorageBudget -> "apiSetChatStorageBudget"
+    is ApiClearChatStorageBudget -> "apiClearChatStorageBudget"
     is ApiCreateChatItems -> "apiCreateChatItems"
     is ApiReportMessage -> "apiReportMessage"
     is ApiUpdateChatItem -> "apiUpdateChatItem"
@@ -6444,6 +6474,7 @@ sealed class CR {
   @Serializable @SerialName("connectionVerified") class ConnectionVerified(val user: UserRef, val verified: Boolean, val expectedCode: String): CR()
   @Serializable @SerialName("tagsUpdated") class TagsUpdated(val user: UserRef, val userTags: List<ChatTag>, val chatTags: List<Long>): CR()
   @Serializable @SerialName("fileVault") class FileVault(val user: UserRef, val fileVault: FileVaultData): CR()
+  @Serializable @SerialName("chatStorageBudgets") class ChatStorageBudgets(val user: UserRef, val storageBudgets: List<ChatStorageBudget>): CR()
   @Serializable @SerialName("invitation") class Invitation(val user: UserRef, val connLinkInvitation: CreatedConnLink, val connection: PendingContactConnection): CR()
   @Serializable @SerialName("connectionIncognitoUpdated") class ConnectionIncognitoUpdated(val user: UserRef, val toConnection: PendingContactConnection): CR()
   @Serializable @SerialName("connectionUserChanged") class ConnectionUserChanged(val user: UserRef, val fromConnection: PendingContactConnection, val toConnection: PendingContactConnection, val newUser: UserRef): CR()
@@ -6638,6 +6669,7 @@ sealed class CR {
     is ConnectionVerified -> "connectionVerified"
     is TagsUpdated -> "tagsUpdated"
     is FileVault -> "fileVault"
+    is ChatStorageBudgets -> "chatStorageBudgets"
     is Invitation -> "invitation"
     is ConnectionIncognitoUpdated -> "connectionIncognitoUpdated"
     is ConnectionUserChanged -> "ConnectionUserChanged"
@@ -6824,6 +6856,7 @@ sealed class CR {
     is ConnectionVerified -> withUser(user, "verified: $verified\nconnectionCode: $expectedCode")
     is TagsUpdated -> withUser(user, "userTags: ${json.encodeToString(userTags)}\nchatTags: ${json.encodeToString(chatTags)}")
     is FileVault -> withUser(user, json.encodeToString(fileVault))
+    is ChatStorageBudgets -> withUser(user, json.encodeToString(storageBudgets))
     is Invitation -> withUser(user, "connLinkInvitation: ${json.encodeToString(connLinkInvitation)}\nconnection: $connection")
     is ConnectionIncognitoUpdated -> withUser(user, json.encodeToString(toConnection))
     is ConnectionUserChanged -> withUser(user, "fromConnection: ${json.encodeToString(fromConnection)}\ntoConnection: ${json.encodeToString(toConnection)}\nnewUser: ${json.encodeToString(newUser)}" )

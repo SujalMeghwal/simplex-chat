@@ -325,7 +325,8 @@ processAgentMsgRcvFile _corrId aFileId msg = do
               fsTargetPath <- lift $ toFSFilePath targetPath
               renameFile xftpPath fsTargetPath
               let RcvFileTransfer {cryptoArgs = ftCryptoArgs} = ft
-              fileHash_ <- liftIO $ either (const Nothing) Just <$> runExceptT (hashFile fsTargetPath ftCryptoArgs)
+              hmacKey <- withStore' $ \db -> getOrCreateHashKey db user
+              fileHash_ <- liftIO $ either (const Nothing) Just <$> runExceptT (hashFile hmacKey fsTargetPath ftCryptoArgs)
               ci_ <- withStore $ \db -> do
                 liftIO $ do
                   updateRcvFileStatus db fileId FSComplete
@@ -1316,9 +1317,10 @@ processAgentMessageConn vr user@User {userId} corrId agentConnId agentMessage = 
               else do
                 appendFileChunk ft chunkNo chunk True
                 let RcvFileTransfer {cryptoArgs = ftCryptoArgs, fileStatus = ftFileStatus} = ft
-                    hashCompletedRcvFile filePath = do
+                hmacKey <- withStore' $ \db -> getOrCreateHashKey db user
+                let hashCompletedRcvFile filePath = do
                       fsFilePath <- lift $ toFSFilePath filePath
-                      liftIO $ either (const Nothing) Just <$> runExceptT (hashFile fsFilePath ftCryptoArgs)
+                      liftIO $ either (const Nothing) Just <$> runExceptT (hashFile hmacKey fsFilePath ftCryptoArgs)
                 fileHash_ <- case ftFileStatus of
                   RFSConnected filePath -> hashCompletedRcvFile filePath
                   RFSAccepted filePath -> hashCompletedRcvFile filePath

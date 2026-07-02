@@ -5186,6 +5186,21 @@ data class FileVaultData(
   val fileCollections: List<FileCollectionEntry>
 )
 
+// Mirrors Haskell ChatStorageBudget (Types.hs) — field names match the sb*-prefixed JSON keys
+// exactly (that prefix exists on the Haskell side only to dodge DuplicateRecordFields ambiguity;
+// no such constraint here, but matching the wire names avoids a silent decode mismatch).
+// The nullable id fields MUST default to null: the Haskell side derives JSON with
+// omitNothingFields=True, so a budget always omits the two ids that don't apply to its chat type.
+// Without the defaults kotlinx treats them as required and throws MissingFieldException on decode,
+// which silently breaks apiGetChatStorageBudgets (returns null -> budgets never load/enforce).
+@Serializable
+data class ChatStorageBudget(
+  val sbContactId: Long? = null,
+  val sbGroupId: Long? = null,
+  val sbNoteFolderId: Long? = null,
+  val sbBudgetBytes: Long
+)
+
 @Serializable
 class ChatItemInfo(
   val itemVersions: List<ChatItemVersion>,

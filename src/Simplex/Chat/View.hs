@@ -156,6 +156,7 @@ chatResponseToView hu cfg@ChatConfig {logLevel, showReactions, testView} liveIte
   CRChatItemNotChanged u ci -> ttyUser u $ viewItemNotChanged ci
   CRTagsUpdated u _ _ -> ttyUser u ["chat tags updated"]
   CRFileVault u vault -> ttyUser u [viewJSON vault]
+  CRChatStorageBudgets u budgets -> ttyUser u [viewJSON budgets]
   CRChatItemsDeleted u deletions byUser timed -> ttyUser u $ viewChatItemsDeleted (unmuted u) deletions byUser timed ts tz testView
   CRGroupChatItemsDeleted u g ciIds byUser member_ -> ttyUser u $ viewGroupChatItemsDeleted g ciIds byUser member_
   CRChatItemReaction u added (ACIReaction _ _ chat reaction) -> ttyUser u $ unmutedReaction u chat reaction $ viewItemReaction showReactions chat reaction added ts tz

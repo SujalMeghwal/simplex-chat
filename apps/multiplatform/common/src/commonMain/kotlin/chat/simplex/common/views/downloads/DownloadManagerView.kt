@@ -46,7 +46,9 @@ fun DownloadManagerView(close: () -> Unit) {
 
   suspend fun reload() {
     loading.value = true
-    LocalFileVault.load(chatModel.remoteHostId())
+    val rhId = chatModel.remoteHostId()
+    LocalFileVault.load(rhId)
+    ChatStorageBudgets.load(rhId)
     val files = loadAllFilesAcrossChats()
     enforceStorageBudgets(files)
     allFiles.value = if (files.any { ChatStorageBudgets.get(it.chat) != null }) loadAllFilesAcrossChats() else files
@@ -82,7 +84,7 @@ fun DownloadManagerView(close: () -> Unit) {
       }
       tab.value == MainTab.Browse -> BrowseTab(allFiles.value)
       tab.value == MainTab.Duplicates -> DuplicatesTab(allFiles.value) { reloadScope -> reloadScope.launch { reload() } }
-      tab.value == MainTab.Storage -> StorageTab(allFiles.value)
+      tab.value == MainTab.Storage -> StorageTab(allFiles.value) { reloadScope -> reloadScope.launch { reload() } }
       tab.value == MainTab.Insights -> InsightsTab(allFiles.value)
     }
   }
@@ -453,7 +455,8 @@ private suspend fun deleteLocalCopies(entries: List<UnifiedFileEntry>) {
 // --- Storage tab -------------------------------------------------------------------------------
 
 @Composable
-private fun StorageTab(all: List<UnifiedFileEntry>) {
+private fun StorageTab(all: List<UnifiedFileEntry>, onReload: (CoroutineScope) -> Unit) {
+  val scope = rememberCoroutineScope()
   val stats = remember(all) { storageStats(all) }
   val totalBytes = stats.values.sumOf { it.second }
   val totalCount = stats.values.sumOf { it.first }
@@ -518,12 +521,13 @@ private fun StorageTab(all: List<UnifiedFileEntry>) {
 
   val target = budgetDialogFor.value
   if (target != null) {
-    SetBudgetDialog(target, onDismiss = { budgetDialogFor.value = null })
+    SetBudgetDialog(target, onDismiss = { budgetDialogFor.value = null; onReload(scope) })
   }
 }
 
 @Composable
 private fun SetBudgetDialog(chat: Chat, onDismiss: () -> Unit) {
+  val scope = rememberCoroutineScope()
   val current = ChatStorageBudgets.get(chat)
   val text = remember { mutableStateOf(if (current != null) (current / (1024 * 1024)).toString() else "") }
   AlertDialog(
@@ -539,14 +543,21 @@ private fun SetBudgetDialog(chat: Chat, onDismiss: () -> Unit) {
     confirmButton = {
       TextButton(onClick = {
         val mb = text.value.toLongOrNull()
-        ChatStorageBudgets.set(chat, if (mb != null && mb > 0) mb * 1024 * 1024 else null)
-        onDismiss()
+        scope.launch {
+          ChatStorageBudgets.set(chatModel.remoteHostId(), chat, if (mb != null && mb > 0) mb * 1024 * 1024 else null)
+          onDismiss()
+        }
       }) { Text("Save") }
     },
     dismissButton = {
       Row {
         if (current != null) {
-          TextButton(onClick = { ChatStorageBudgets.set(chat, null); onDismiss() }) { Text("Clear") }
+          TextButton(onClick = {
+            scope.launch {
+              ChatStorageBudgets.set(chatModel.remoteHostId(), chat, null)
+              onDismiss()
+            }
+          }) { Text("Clear") }
         }
         TextButton(onClick = onDismiss) { Text("Cancel") }
       }

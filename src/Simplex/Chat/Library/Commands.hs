@@ -344,6 +344,16 @@ handleCommandError a = runExceptT a `E.catches` ioErrors
 parseChatCommand :: ByteString -> Either String ChatCommand
 parseChatCommand = A.parseOnly chatCommandP . B.dropWhileEnd isSpace
 
+-- Maps a ChatRef onto the same (contact_id, group_id, note_folder_id) identification the files
+-- table itself already uses, for local_chat_storage_budgets. Non-chat ChatTypes (contact
+-- request/connection) have no storage budget concept, so they map to no identifiers.
+chatRefToIds :: ChatType -> Int64 -> (Maybe Int64, Maybe Int64, Maybe Int64)
+chatRefToIds cType chatId = case cType of
+  CTDirect -> (Just chatId, Nothing, Nothing)
+  CTGroup -> (Nothing, Just chatId, Nothing)
+  CTLocal -> (Nothing, Nothing, Just chatId)
+  _ -> (Nothing, Nothing, Nothing)
+
 -- | Chat API commands interpreted in context of a local zone
 processChatCommand :: VersionRangeChat -> NetworkRequestMode -> ChatCommand -> CM ChatResponse
 processChatCommand vr nm = \case
@@ -668,6 +678,16 @@ processChatCommand vr nm = \case
   APIDeleteFileCollection name -> withUser $ \user -> withFastStore' $ \db -> do
     deleteFileCollection db user name
     CRFileVault user <$> getFileVault db user
+  APIGetChatStorageBudgets -> withUser $ \user -> withFastStore' $ \db ->
+    CRChatStorageBudgets user <$> getChatStorageBudgets db user
+  APISetChatStorageBudget (ChatRef cType chatId _) budgetBytes -> withUser $ \user -> withFastStore' $ \db -> do
+    let (cId, gId, nfId) = chatRefToIds cType chatId
+    setChatStorageBudget db user cId gId nfId budgetBytes
+    CRChatStorageBudgets user <$> getChatStorageBudgets db user
+  APIClearChatStorageBudget (ChatRef cType chatId _) -> withUser $ \user -> withFastStore' $ \db -> do
+    let (cId, gId, nfId) = chatRefToIds cType chatId
+    clearChatStorageBudget db user cId gId nfId
+    CRChatStorageBudgets user <$> getChatStorageBudgets db user
   APICreateChatItems folderId cms -> withUser $ \user -> do
     forM_ cms $ \cm -> assertAllowedContent' cm >> assertNoMentions cm
     createNoteFolderContentItems user folderId (L.map composedMessageReq cms)
@@ -5006,6 +5026,9 @@ chatCommandP =
       "/_add file " *> (APIAddFileToCollection <$> A.decimal <* " to collection " <*> textP),
       "/_remove file " *> (APIRemoveFileFromCollection <$> A.decimal <* " from collection " <*> textP),
       "/_delete file collection " *> (APIDeleteFileCollection <$> textP),
+      "/_get storage budgets" $> APIGetChatStorageBudgets,
+      "/_set storage budget " *> (APISetChatStorageBudget <$> chatRefP <* A.space <*> A.decimal),
+      "/_clear storage budget " *> (APIClearChatStorageBudget <$> chatRefP),
       "/_create *" *> (APICreateChatItems <$> A.decimal <*> (" json " *> jsonP <|> " text " *> composedMessagesTextP)),
       "/_report #" *> (APIReportMessage <$> A.decimal <* A.space <*> A.decimal <*> (" reason=" *> strP) <*> (A.space *> textP <|> pure "")),
       "/report #" *> (ReportMessage <$> displayNameP <*> optional (" @" *> displayNameP) <*> _strP <* A.space <*> msgTextP),

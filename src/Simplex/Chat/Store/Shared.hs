@@ -937,6 +937,46 @@ getFileVault db user@User {userId} = do
     pure FileCollectionEntry {collectionName, fileIds}
   pure FileVault {favoriteFileIds, fileCollections}
 
+-- Local-device-only per-chat storage budget. Delete-then-insert instead of upsert to stay
+-- portable across the SQLite/Postgres backends this module compiles for (avoids relying on an
+-- ON CONFLICT target expression that only one engine's optimizer would accept identically).
+-- COALESCE (not IFNULL) for the same cross-backend reason.
+setChatStorageBudget :: DB.Connection -> User -> Maybe Int64 -> Maybe Int64 -> Maybe Int64 -> Int64 -> IO ()
+setChatStorageBudget db user contactId groupId noteFolderId budgetBytes = do
+  clearChatStorageBudget db user contactId groupId noteFolderId
+  let User {userId} = user
+  DB.execute
+    db
+    [sql|
+      INSERT INTO local_chat_storage_budgets (contact_id, group_id, note_folder_id, user_id, budget_bytes)
+      VALUES (?,?,?,?,?)
+    |]
+    (contactId, groupId, noteFolderId, userId, budgetBytes)
+
+clearChatStorageBudget :: DB.Connection -> User -> Maybe Int64 -> Maybe Int64 -> Maybe Int64 -> IO ()
+clearChatStorageBudget db User {userId} contactId groupId noteFolderId =
+  DB.execute
+    db
+    [sql|
+      DELETE FROM local_chat_storage_budgets
+      WHERE user_id = ?
+        AND COALESCE(contact_id, -1) = COALESCE(?, -1)
+        AND COALESCE(group_id, -1) = COALESCE(?, -1)
+        AND COALESCE(note_folder_id, -1) = COALESCE(?, -1)
+    |]
+    (userId, contactId, groupId, noteFolderId)
+
+getChatStorageBudgets :: DB.Connection -> User -> IO [ChatStorageBudget]
+getChatStorageBudgets db User {userId} =
+  map toBudget
+    <$> DB.query
+      db
+      "SELECT contact_id, group_id, note_folder_id, budget_bytes FROM local_chat_storage_budgets WHERE user_id = ?"
+      (Only userId)
+  where
+    toBudget :: (Maybe Int64, Maybe Int64, Maybe Int64, Int64) -> ChatStorageBudget
+    toBudget (sbContactId, sbGroupId, sbNoteFolderId, sbBudgetBytes) = ChatStorageBudget {sbContactId, sbGroupId, sbNoteFolderId, sbBudgetBytes}
+
 getGroupChatTags :: DB.Connection -> GroupId -> IO [ChatTagId]
 getGroupChatTags db groupId =
   map fromOnly <$> DB.query db "SELECT chat_tag_id FROM chat_tags_chats WHERE group_id = ?" (Only groupId)

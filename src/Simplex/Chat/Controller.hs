@@ -341,6 +341,11 @@ data ChatCommand
   | APIAddFileToCollection FileTransferId Text
   | APIRemoveFileFromCollection FileTransferId Text
   | APIDeleteFileCollection Text
+  -- Local-device-only per-chat storage cap -- same tier as the file vault above, never touches
+  -- SMP/XFTP/agent protocol.
+  | APIGetChatStorageBudgets
+  | APISetChatStorageBudget {chatRef :: ChatRef, budgetBytes :: Int64}
+  | APIClearChatStorageBudget {chatRef :: ChatRef}
   | APICreateChatItems {noteFolderId :: NoteFolderId, composedMessages :: NonEmpty ComposedMessage}
   | APIReportMessage {groupId :: GroupId, chatItemId :: ChatItemId, reportReason :: ReportReason, reportText :: Text}
   | ReportMessage {groupName :: GroupName, contactName_ :: Maybe ContactName, reportReason :: ReportReason, reportedMessage :: Text}
@@ -730,6 +735,7 @@ data ChatResponse
   | CRConnectionVerified {user :: User, verified :: Bool, expectedCode :: Text}
   | CRTagsUpdated {user :: User, userTags :: [ChatTag], chatTags :: [ChatTagId]}
   | CRFileVault {user :: User, fileVault :: FileVault}
+  | CRChatStorageBudgets {user :: User, storageBudgets :: [ChatStorageBudget]}
   | CRNewChatItems {user :: User, chatItems :: [AChatItem]}
   | CRChatItemUpdated {user :: User, chatItem :: AChatItem}
   | CRChatItemNotChanged {user :: User, chatItem :: AChatItem}

@@ -30,6 +30,7 @@ module Simplex.Chat.Store.Files
     updateCIFileStatus,
     updateFileHash,
     findDuplicateFileName,
+    getOrCreateHashKey,
     getSharedMsgIdByFileId,
     getFileIdBySharedMsgId,
     getGroupFileIdBySharedMsgId,
@@ -76,6 +77,8 @@ import Control.Applicative ((<|>))
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.IO.Class
+import Crypto.Random (getRandomBytes)
+import Data.ByteString (ByteString)
 import Data.Either (rights)
 import Data.Functor ((<&>))
 import Data.Int (Int64)
@@ -304,6 +307,19 @@ findDuplicateFileName db User {userId} fileId fileHash =
         LIMIT 1
       |]
       (userId, fileHash, fileId)
+
+-- Per-user random 32-byte key so file_hash is an HMAC, not a plain hash -- an attacker with a
+-- precomputed hash of a known file can't match it against this profile without this key. Never
+-- transmitted, never leaves local_hash_key.
+getOrCreateHashKey :: DB.Connection -> User -> IO ByteString
+getOrCreateHashKey db User {userId} = do
+  existing <- maybeFirstRow fromOnly $ DB.query db "SELECT hash_key FROM local_hash_key WHERE user_id = ?" (Only userId)
+  case existing of
+    Just key -> pure key
+    Nothing -> do
+      key <- getRandomBytes 32
+      DB.execute db "INSERT INTO local_hash_key (user_id, hash_key) VALUES (?,?)" (userId, key :: ByteString)
+      pure key
 
 getSharedMsgIdByFileId :: DB.Connection -> UserId -> Int64 -> ExceptT StoreError IO SharedMsgId
 getSharedMsgIdByFileId db userId fileId =

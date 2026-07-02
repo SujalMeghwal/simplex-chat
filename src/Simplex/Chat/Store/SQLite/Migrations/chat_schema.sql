@@ -1367,3 +1367,20 @@ CREATE TABLE local_download_stats (
   bytes_deduped INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (stat_date, user_id)
 ) WITHOUT ROWID, STRICT;
+CREATE TABLE local_hash_key (
+  user_id INTEGER PRIMARY KEY REFERENCES users ON DELETE CASCADE,
+  hash_key BLOB NOT NULL
+) STRICT;
+CREATE TABLE local_chat_storage_budgets (
+  contact_id INTEGER REFERENCES contacts ON DELETE CASCADE,
+  group_id INTEGER REFERENCES groups ON DELETE CASCADE,
+  note_folder_id INTEGER REFERENCES note_folders ON DELETE CASCADE,
+  user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,
+  budget_bytes INTEGER NOT NULL
+) STRICT;
+CREATE UNIQUE INDEX idx_local_chat_storage_budgets_chat ON local_chat_storage_budgets (
+  user_id,
+  IFNULL(contact_id, -1),
+  IFNULL(group_id, -1),
+  IFNULL(note_folder_id, -1)
+);

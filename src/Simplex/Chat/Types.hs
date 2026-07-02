@@ -2017,6 +2017,16 @@ data FileVault = FileVault
   }
   deriving (Show)
 
+-- Local-device-only per-chat storage cap. Field names are prefixed (sb*) to avoid
+-- DuplicateRecordFields ambiguity with the many other records that have contactId/groupId fields.
+data ChatStorageBudget = ChatStorageBudget
+  { sbContactId :: Maybe Int64,
+    sbGroupId :: Maybe Int64,
+    sbNoteFolderId :: Maybe Int64,
+    sbBudgetBytes :: Int64
+  }
+  deriving (Show)
+
 -- ad-hoc type for data required for XGrpMemIntro continuation
 data XGrpMemIntroCont = XGrpMemIntroCont
   { groupId :: GroupId,
@@ -2225,3 +2235,5 @@ $(JQ.deriveJSON defaultJSON ''ChatTag)
 $(JQ.deriveJSON defaultJSON ''FileCollectionEntry)
 
 $(JQ.deriveJSON defaultJSON ''FileVault)
+
+$(JQ.deriveJSON defaultJSON ''ChatStorageBudget)

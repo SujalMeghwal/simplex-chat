@@ -14,7 +14,7 @@ import Control.Monad.IO.Class
 import Control.Monad.IO.Unlift (MonadUnliftIO (..))
 import Control.Monad.Reader
 import Crypto.Hash (SHA256)
-import qualified Crypto.Hash as CH
+import qualified Crypto.MAC.HMAC as HMAC
 import Data.Bifunctor (first)
 import Data.ByteArray.Encoding (Base (Base16), convertToBase)
 import qualified Data.ByteString as BS
@@ -50,14 +50,18 @@ encryptFile fromPath toPath cfArgs = do
       unless (LB.null ch) $ liftIO $ CF.hPut w ch
       unless (LB.length ch < chunkSize) $ encryptChunks r w
 
--- SHA-256 of a file's plaintext content, used only for local dedup (file_hash column) -- never
--- transmitted, never part of any protocol message. CF.readFile transparently decrypts when
--- cfArgs is Just, so this always hashes content, not ciphertext, regardless of whether
--- privacyEncryptLocalFiles is on.
-hashFile :: FilePath -> Maybe CryptoFileArgs -> ExceptT String IO Text
-hashFile path cfArgs = do
+-- HMAC-SHA256 (keyed with a random per-profile secret, see Store.Files.getOrCreateHashKey) of a
+-- file's plaintext content, used only for local dedup (file_hash column) -- never transmitted,
+-- never part of any protocol message. CF.readFile transparently decrypts when cfArgs is Just, so
+-- this always hashes content, not ciphertext, regardless of whether privacyEncryptLocalFiles is
+-- on. Keyed rather than a plain hash so an attacker who has a precomputed hash of some known
+-- file (e.g. a leaked/public file) can't test it against this profile without the local key --
+-- a plain SHA-256 would let them confirm "this profile has file X" without ever reading it.
+hashFile :: BS.ByteString -> FilePath -> Maybe CryptoFileArgs -> ExceptT String IO Text
+hashFile hmacKey path cfArgs = do
   content <- withExceptT show $ CF.readFile (CryptoFile path cfArgs)
-  let digest = CH.hashFinalize $ CH.hashUpdates (CH.hashInit @SHA256) (LB.toChunks content)
+  let ctx = HMAC.updates (HMAC.initialize hmacKey :: HMAC.Context SHA256) (LB.toChunks content)
+      digest = HMAC.hmacGetDigest (HMAC.finalize ctx)
   pure . decodeLatin1 $ (convertToBase Base16 digest :: BS.ByteString)
 
 chunkSize :: Num a => a

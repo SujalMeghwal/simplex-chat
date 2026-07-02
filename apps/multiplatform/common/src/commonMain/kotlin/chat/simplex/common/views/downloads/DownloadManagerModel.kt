@@ -2,18 +2,19 @@ package chat.simplex.common.views.downloads
 
 import chat.simplex.common.model.*
 import chat.simplex.common.platform.*
-import kotlinx.serialization.encodeToString
-import kotlinx.serialization.json.Json
 import java.io.File
 import java.security.MessageDigest
 
 // Everything in this file is local-device-only: no network call, no sync, no telemetry.
-// Favorites/collections persist inside chat.db (local_file_favorites/local_file_collections
-// tables) — same on-device SQLCipher tier as the rest of the app's data, never bundled into any
-// export/share/backup path, never touched by SMP/XFTP protocol code.
-// Storage budgets (below) are plaintext-local by design, not DB-backed like favorites — a byte
-// threshold per chat carries none of the sensitivity a "which files did you star" list does, so
-// the plaintext-JSON tier (same as themes.yaml) is an appropriate, not a downgraded, choice here.
+// Favorites/collections and per-chat storage budgets all persist inside chat.db
+// (local_file_favorites/local_file_collections/local_chat_storage_budgets tables) — same
+// on-device SQLCipher tier as the rest of the app's data, never bundled into any export/share/
+// backup path, never touched by SMP/XFTP protocol code.
+//
+// sha256OfLocalFile below is a separate, transient, in-memory hash used only to group the
+// Duplicates tab on demand -- it's never written to disk, so it doesn't carry the same
+// at-rest-fingerprinting concern that the persisted files.file_hash column does (that one is
+// HMAC-keyed server-side for exactly that reason, see Simplex.Chat.Util.hashFile).
 
 enum class FileCategory { Image, Video, Voice, File }
 
@@ -240,38 +241,40 @@ fun storageHealth(entries: List<UnifiedFileEntry>, duplicates: List<DuplicateGro
 // Local-only setting: cap how much local storage a chat is allowed to use. When a chat exceeds
 // its budget, oldest local copies are deleted first (cidmInternal — this device only, senders
 // and other devices untouched), same mechanism already used everywhere else in this file.
-
-@kotlinx.serialization.Serializable
-private data class ChatStorageBudgetsData(val budgets: MutableMap<String, Long> = mutableMapOf())
-
-private fun chatBudgetKey(chat: Chat): String = "${chat.chatInfo.chatType}:${chat.chatInfo.apiId}"
+//
+// Persisted inside chat.db (local_chat_storage_budgets table) — same SQLCipher tier as
+// favorites/collections. Originally shipped as a plaintext local JSON file on the reasoning that
+// a byte-count cap isn't sensitive; moved here anyway so nothing in this feature sits at a lower
+// protection tier than the rest of the account for no real reason.
 
 object ChatStorageBudgets {
-  private val file = File(getPreferenceFilePath("download_manager_budgets.json"))
-  private var data: ChatStorageBudgetsData = load()
+  private var cache: List<ChatStorageBudget> = emptyList()
 
-  private fun load(): ChatStorageBudgetsData =
-    try {
-      if (file.exists()) Json.decodeFromString(file.readText()) else ChatStorageBudgetsData()
-    } catch (e: Throwable) {
-      Log.e(TAG, "ChatStorageBudgets load error: $e")
-      ChatStorageBudgetsData()
-    }
+  private fun keyFor(type: ChatType, id: Long): String = "$type:$id"
 
-  private fun persist() {
-    try {
-      file.parentFile?.mkdirs()
-      file.writeText(Json.encodeToString(data))
-    } catch (e: Throwable) {
-      Log.e(TAG, "ChatStorageBudgets persist error: $e")
-    }
+  private fun keyFor(b: ChatStorageBudget): String? = when {
+    b.sbContactId != null -> keyFor(ChatType.Direct, b.sbContactId)
+    b.sbGroupId != null -> keyFor(ChatType.Group, b.sbGroupId)
+    b.sbNoteFolderId != null -> keyFor(ChatType.Local, b.sbNoteFolderId)
+    else -> null
   }
 
-  fun get(chat: Chat): Long? = data.budgets[chatBudgetKey(chat)]
+  suspend fun load(rhId: Long?) {
+    chatModel.controller.apiGetChatStorageBudgets(rhId)?.let { cache = it }
+  }
 
-  fun set(chat: Chat, budgetBytes: Long?) {
-    if (budgetBytes == null) data.budgets.remove(chatBudgetKey(chat)) else data.budgets[chatBudgetKey(chat)] = budgetBytes
-    persist()
+  fun get(chat: Chat): Long? {
+    val key = keyFor(chat.chatInfo.chatType, chat.chatInfo.apiId)
+    return cache.firstOrNull { keyFor(it) == key }?.sbBudgetBytes
+  }
+
+  suspend fun set(rhId: Long?, chat: Chat, budgetBytes: Long?) {
+    val updated = if (budgetBytes == null) {
+      chatModel.controller.apiClearChatStorageBudget(rhId, chat.chatInfo.chatType, chat.chatInfo.apiId)
+    } else {
+      chatModel.controller.apiSetChatStorageBudget(rhId, chat.chatInfo.chatType, chat.chatInfo.apiId, budgetBytes)
+    }
+    updated?.let { cache = it }
   }
 }
 
