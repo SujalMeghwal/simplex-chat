@@ -11,6 +11,11 @@ expect fun LockToCurrentOrientationUntilDispose()
 @Composable
 expect fun LocalMultiplatformView(): Any?
 
+// Wraps content with a hover tooltip on desktop (shows [text] on mouse-over); no-op on Android,
+// where the same info is conveyed by long-press content descriptions.
+@Composable
+expect fun WithTooltip(text: String, content: @Composable () -> Unit)
+
 @Composable
 expect fun getKeyboardState(): State<KeyboardState>
 expect fun hideKeyboard(view: Any?, clearFocus: Boolean = false)

@@ -510,7 +510,11 @@ fun ChatView(
                   ModalManager.end.closeModals()
                 }
                 ModalManager.end.showModalCloseable(true) { close ->
-                  remember { derivedStateOf { chatModel.getGroupMember(member.groupMemberId) } }.value?.let { mem ->
+                  // Key the remember on the member id: when the side panel is reused to show a
+                  // *different* member (clicking a 2nd avatar while the first is still open), an
+                  // unkeyed remember would keep returning the first member's derivedState, so the
+                  // panel never updated until you closed and reopened it.
+                  remember(member.groupMemberId) { derivedStateOf { chatModel.getGroupMember(member.groupMemberId) } }.value?.let { mem ->
                     GroupMemberInfoView(chatRh, groupInfo, mem, scrollToItemId, stats, code, chatModel, openedFromSupportChat = false, close = close, closeAll = close)
                   }
                 }

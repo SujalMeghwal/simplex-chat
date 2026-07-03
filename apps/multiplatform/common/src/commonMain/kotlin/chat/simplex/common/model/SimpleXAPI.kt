@@ -2194,6 +2194,31 @@ object ChatController {
     )
   }
 
+  // Privacy-safe bulk receive for the Download Manager: never auto-approves unknown relays (so a
+  // file's download never silently exposes the user's IP). Accepted files (already on trusted
+  // relays) start downloading; the fileIds that were rejected because they'd need IP exposure are
+  // returned so the caller can act on them (the manager deletes those items locally). No approval
+  // alert is ever shown — this is the "auto handle" path.
+  suspend fun receiveFilesSkippingUnapproved(rhId: Long?, user: UserLike, fileIds: List<Long>): List<Long> {
+    val notApproved = mutableListOf<Long>()
+    for (fileId in fileIds) {
+      val r = sendCmd(
+        rhId, CC.ReceiveFile(
+          fileId,
+          userApprovedRelays = false,
+          encrypt = appPrefs.privacyEncryptLocalFiles.get(),
+          inline = null
+        )
+      )
+      if (r is API.Result && r.res is CR.RcvFileAccepted) {
+        chatItemSimpleUpdate(rhId, user, r.res.chatItem)
+      } else if (apiChatErrorType(r) is ChatErrorType.FileNotApproved) {
+        notApproved.add(fileId)
+      }
+    }
+    return notApproved
+  }
+
   suspend fun cancelFile(rh: Long?, user: User, fileId: Long) {
     val chatItem = apiCancelFile(rh, fileId)
     if (chatItem != null) {
@@ -3158,6 +3183,8 @@ object ChatController {
         cleanupFile(r.chatItem)
       }
       is CR.RcvFileProgressXFTP -> {
+        // Feed the Download Manager's live progress map (cheap, event-driven — no per-chat re-query).
+        chatModel.fileProgress[r.rcvFileTransfer.fileId] = r.receivedSize to r.totalSize
         if (r.chatItem_ != null) {
           chatItemSimpleUpdate(rhId, r.user, r.chatItem_)
         }

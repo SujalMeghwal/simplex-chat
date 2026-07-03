@@ -298,6 +298,10 @@ fun MediaPlayer.stop() {
   controls().stop()
 }
 
+fun MediaPlayer.setRate(rate: Float) {
+  controls().setRate(rate)
+}
+
 private val MediaPlayer.currentPosition: Int
   get() = max(0, status().time().toInt())
 

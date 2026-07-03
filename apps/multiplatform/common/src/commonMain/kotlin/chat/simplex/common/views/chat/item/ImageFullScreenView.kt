@@ -290,9 +290,34 @@ fun ImageFullScreenView(imageProvider: () -> ImageGalleryProvider, close: () -> 
         }
     ) {
       DesktopMediaContent(curIndex.value)
+      // Visible prev/next arrows so navigation is discoverable (not just the ←/→ keys). Clicking them
+      // keeps focus on this Box (they re-request it) so the keyboard shortcuts keep working too.
+      val hasPrev = provider.getMedia(curIndex.value - 1) != null
+      val hasNext = provider.getMedia(curIndex.value + 1) != null
+      if (hasPrev) {
+        GalleryNavButton(MR.images.ic_arrow_back_ios_new, "Previous", Modifier.align(Alignment.CenterStart)) {
+          curIndex.value -= 1; focusRequester.requestFocus()
+        }
+      }
+      if (hasNext) {
+        GalleryNavButton(MR.images.ic_arrow_forward_ios, "Next", Modifier.align(Alignment.CenterEnd)) {
+          curIndex.value += 1; focusRequester.requestFocus()
+        }
+      }
     }
     LaunchedEffect(Unit) {
       focusRequester.requestFocus()
+    }
+  }
+}
+
+@Composable
+private fun GalleryNavButton(icon: dev.icerock.moko.resources.ImageResource, descr: String, modifier: Modifier, onClick: () -> Unit) {
+  Box(modifier.padding(horizontal = 8.dp)) {
+    Surface(color = Color.Black.copy(alpha = 0.4f), shape = androidx.compose.foundation.shape.CircleShape) {
+      IconButton(onClick = onClick) {
+        Icon(painterResource(icon), descr, Modifier.size(28.dp), tint = Color.White)
+      }
     }
   }
 }

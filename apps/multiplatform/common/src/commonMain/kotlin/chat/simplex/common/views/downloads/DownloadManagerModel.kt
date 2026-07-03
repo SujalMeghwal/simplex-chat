@@ -26,11 +26,14 @@ fun MsgContentTag.toFileCategory(): FileCategory? = when (this) {
   else -> null
 }
 
-enum class DownloadStatusFilter { All, Downloaded, Pending, Failed }
+enum class DownloadStatusFilter { All, Downloaded, Downloading, Pending, Failed }
 
 fun CIFileStatus.toStatusFilter(): DownloadStatusFilter = when (this) {
   is CIFileStatus.RcvComplete, is CIFileStatus.SndComplete -> DownloadStatusFilter.Downloaded
-  is CIFileStatus.RcvInvitation, is CIFileStatus.RcvAccepted, is CIFileStatus.RcvTransfer -> DownloadStatusFilter.Pending
+  // Actively transferring right now (accepted / receiving bytes) — its own bucket, separate from
+  // items that merely have an offer and haven't started.
+  is CIFileStatus.RcvAccepted, is CIFileStatus.RcvTransfer -> DownloadStatusFilter.Downloading
+  is CIFileStatus.RcvInvitation -> DownloadStatusFilter.Pending
   is CIFileStatus.RcvAborted, is CIFileStatus.RcvError, is CIFileStatus.RcvCancelled,
   is CIFileStatus.SndError, is CIFileStatus.SndCancelled -> DownloadStatusFilter.Failed
   else -> DownloadStatusFilter.All
@@ -50,6 +53,21 @@ data class UnifiedFileEntry(
   val fileSize: Long get() = item.file?.fileSize ?: 0L
   val isLocal: Boolean get() = item.file != null && getLoadedFilePath(item.file) != null
   val statusFilter: DownloadStatusFilter get() = item.file?.fileStatus?.toStatusFilter() ?: DownloadStatusFilter.All
+  // Actively receiving right now (accepted or mid-transfer) — drives the per-tile spinner so the
+  // user can see a download is in flight instead of the button looking dead.
+  val isDownloading: Boolean get() = item.file?.fileStatus.let { it is CIFileStatus.RcvAccepted || it is CIFileStatus.RcvTransfer }
+  val isFailed: Boolean get() = statusFilter == DownloadStatusFilter.Failed
+  // A file that has an offer but no local bytes yet and isn't already downloading/failed — i.e. the
+  // set that "Download all pending" and the pending filter act on.
+  val isPending: Boolean get() = !isLocal && !isDownloading && item.file != null
+  // Live receive progress (0..100) when the core reports RcvTransfer bytes; null while merely queued
+  // (RcvAccepted, no bytes yet) so the tile shows an indeterminate spinner instead of a fake 0%.
+  val progressPct: Int? get() = (item.file?.fileStatus as? CIFileStatus.RcvTransfer)?.let {
+    if (it.rcvTotal > 0) (it.rcvProgress * 100 / it.rcvTotal).toInt().coerceIn(0, 100) else null
+  }
+  // Monotonic-ish bytes-so-far for aggregate speed sampling: mid-transfer -> bytes received,
+  // finished -> full size, not started -> 0. Summed across refreshes to derive download speed.
+  val rcvBytes: Long get() = (item.file?.fileStatus as? CIFileStatus.RcvTransfer)?.rcvProgress ?: if (isLocal) fileSize else 0L
   val senderName: String get() = if (item.chatDir.sent) "me" else chat.chatInfo.displayName
   val chatName: String get() = chat.chatInfo.displayName
   val createdAt get() = item.meta.itemTs
@@ -150,7 +168,14 @@ fun List<UnifiedFileEntry>.applyFilters(
 ): List<UnifiedFileEntry> {
   var out = this.asSequence()
   if (category != null) out = out.filter { it.category == category }
-  if (status != DownloadStatusFilter.All) out = out.filter { it.statusFilter == status }
+  when (status) {
+    DownloadStatusFilter.All -> {}
+    // Use the live getters (not just the snapshot status) so "Downloading" tracks active transfers
+    // and "Pending" is strictly the not-started offers — the two the user wanted split apart.
+    DownloadStatusFilter.Downloading -> out = out.filter { it.isDownloading }
+    DownloadStatusFilter.Pending -> out = out.filter { it.isPending }
+    else -> out = out.filter { it.statusFilter == status }
+  }
   if (favoritesOnly) out = out.filter { it.fileId != null && LocalFileVault.isFavorite(it.fileId!!) }
   if (collection != null) {
     val ids = LocalFileVault.filesInCollection(collection)

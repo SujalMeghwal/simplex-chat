@@ -44,6 +44,9 @@ actual fun LockToCurrentOrientationUntilDispose() {
 actual fun LocalMultiplatformView(): Any? = LocalView.current
 
 @Composable
+actual fun WithTooltip(text: String, content: @Composable () -> Unit) = content()
+
+@Composable
 actual fun getKeyboardState(): State<KeyboardState> {
   val density = LocalDensity.current
   val ime = WindowInsets.ime

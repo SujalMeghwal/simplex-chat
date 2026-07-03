@@ -208,6 +208,12 @@ object ChatModel {
   val sharedContent = mutableStateOf(null as SharedContent?)
 
   val filesToDelete = mutableSetOf<File>()
+  // Live XFTP receive progress (fileId -> received/total bytes), fed by RcvFileProgressXFTP events so
+  // the Download Manager shows per-file % and speed without re-querying every chat. Transient,
+  // local-only; the Download Manager prunes entries as transfers finish.
+  val fileProgress = mutableStateMapOf<Long, Pair<Long, Long>>()
+  // Per-file download speed (fileId -> bytes/s), sampled by the Download Manager from fileProgress.
+  val fileSpeed = mutableStateMapOf<Long, Long>()
   val simplexLinkMode by lazy { mutableStateOf(ChatController.appPrefs.simplexLinkMode.get()) }
 
   val clipboardHasText = mutableStateOf(false)
