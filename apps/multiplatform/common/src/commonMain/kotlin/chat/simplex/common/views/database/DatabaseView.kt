@@ -674,6 +674,8 @@ fun deleteChatDatabaseFilesAndState() {
   chatBak.delete()
   agent.delete()
   agentBak.delete()
+  // Leftover from a pre-migration build (budgets now live in chat.db, deleted above), but wipe it too if a device still has it.
+  File(dataDir, "download_manager_budgets.json").delete()
   filesDir.deleteRecursively()
   filesDir.mkdir()
   remoteHostsDir.deleteRecursively()

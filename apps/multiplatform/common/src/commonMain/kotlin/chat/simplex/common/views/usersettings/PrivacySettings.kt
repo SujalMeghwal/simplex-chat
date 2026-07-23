@@ -435,6 +435,8 @@ fun SimplexLockView(
   fun resetSelfDestruct() {
     selfDestructPref.set(false)
     ksSelfDestructPassword.remove()
+    selfDestructDisplayNamePref.set(null)
+    selfDestructDisplayName.value = ""
   }
 
   fun toggleLAMode(toLAMode: LAMode) {

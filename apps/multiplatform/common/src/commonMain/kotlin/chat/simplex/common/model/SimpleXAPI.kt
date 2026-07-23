@@ -118,6 +118,9 @@ class AppPreferences {
   val laMode = mkEnumPreference(SHARED_PREFS_LA_MODE, LAMode.default) { LAMode.values().firstOrNull { it.name == this } }
   val laLockDelay = mkIntPreference(SHARED_PREFS_LA_LOCK_DELAY, 30)
   val laNoticeShown = mkBoolPreference(SHARED_PREFS_LA_NOTICE_SHOWN, false)
+  // Brute-force protection for the passcode/self-destruct prompt. Persisted so a restart can't reset the lockout.
+  val laFailedAttempts = mkIntPreference(SHARED_PREFS_LA_FAILED_ATTEMPTS, 0)
+  val laLockedUntil = mkLongPreference(SHARED_PREFS_LA_LOCKED_UNTIL, 0L)
   val webrtcIceServers = mkStrPreference(SHARED_PREFS_WEBRTC_ICE_SERVERS, null)
   val privacyProtectScreen = mkBoolPreference(SHARED_PREFS_PRIVACY_PROTECT_SCREEN, true)
   val privacyAcceptImages = mkBoolPreference(SHARED_PREFS_PRIVACY_ACCEPT_IMAGES, true)
@@ -394,6 +397,8 @@ class AppPreferences {
     private const val SHARED_PREFS_PERFORM_LA = "PerformLA"
     private const val SHARED_PREFS_LA_MODE = "LocalAuthenticationMode"
     private const val SHARED_PREFS_LA_LOCK_DELAY = "LocalAuthenticationLockDelay"
+    private const val SHARED_PREFS_LA_FAILED_ATTEMPTS = "LocalAuthenticationFailedAttempts"
+    private const val SHARED_PREFS_LA_LOCKED_UNTIL = "LocalAuthenticationLockedUntil"
     private const val SHARED_PREFS_LA_NOTICE_SHOWN = "LANoticeShown"
     private const val SHARED_PREFS_WEBRTC_ICE_SERVERS = "WebrtcICEServers"
     private const val SHARED_PREFS_PRIVACY_PROTECT_SCREEN = "PrivacyProtectScreen"

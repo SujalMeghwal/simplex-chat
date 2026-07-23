@@ -49,6 +49,7 @@ import Data.Time.Clock.System (systemToUTCTime, utcToSystemTime)
 import Data.Type.Equality
 import Data.Typeable (Typeable)
 import Data.Word (Word32)
+import Simplex.Chat.Badges (LocalBadge)
 import Simplex.Chat.Call
 import Simplex.Chat.Options.DB (FromField (..), ToField (..))
 import Simplex.Chat.Types
@@ -931,7 +932,7 @@ parseChatMessages msg = case B.head msg of
       Right (compressed :: L.NonEmpty Compressed) -> case traverse decompressedSize compressed of
         Nothing -> [Left "compressed size not specified"]
         Just sizes
-          | sum sizes > maxDecompressedMsgLength -> [Left "decompressed size exceeds limit"]
+          | any (maxDecompressedMsgLength <) sizes || maxDecompressedMsgLength < sum sizes -> [Left "decompressed size exceeds limit"]
           | otherwise -> concatMap (either (\e -> [Left e]) parseUncompressed' . decompress1) compressed
     parseUncompressed' "" = [Left "empty string"]
     parseUncompressed' s = parseUncompressed (B.head s) s
@@ -1483,7 +1484,10 @@ instance FromField (ChatMessage 'Json) where
 data ContactShortLinkData = ContactShortLinkData
   { profile :: Profile,
     message :: Maybe MsgContent,
-    business :: Bool
+    business :: Bool,
+    -- set by the receiving client for the UI: the link profile's badge, verified and crypto-free.
+    -- never part of the published link data (the link carries the proof inside profile).
+    localBadge :: Maybe LocalBadge
   }
   deriving (Show)
 

@@ -41,7 +41,7 @@ import kotlinx.coroutines.launch
 // on-disk file bytes for hashing) — no network call is made by this screen, nothing here is synced
 // to any other device.
 
-private enum class MainTab { Browse, Duplicates, Storage, Insights }
+private enum class MainTab { Browse, Storage, Insights }
 private enum class ViewMode { Grid, List }
 
 @Composable
@@ -134,7 +134,6 @@ fun DownloadManagerView(close: () -> Unit) {
     }
     TabRow(selectedTabIndex = tab.value.ordinal, backgroundColor = MaterialTheme.colors.background) {
       Tab(selected = tab.value == MainTab.Browse, onClick = { tab.value = MainTab.Browse }, text = { Text("Browse") })
-      Tab(selected = tab.value == MainTab.Duplicates, onClick = { tab.value = MainTab.Duplicates }, text = { Text("Duplicates") })
       Tab(selected = tab.value == MainTab.Storage, onClick = { tab.value = MainTab.Storage }, text = { Text("Storage") })
       Tab(selected = tab.value == MainTab.Insights, onClick = { tab.value = MainTab.Insights }, text = { Text("Insights") })
     }
@@ -144,7 +143,6 @@ fun DownloadManagerView(close: () -> Unit) {
         CircularProgressIndicator(color = MaterialTheme.colors.primary)
       }
       tab.value == MainTab.Browse -> BrowseTab(allFiles.value) { showSpinner -> reload(showSpinner) }
-      tab.value == MainTab.Duplicates -> DuplicatesTab(allFiles.value) { reloadScope -> reloadScope.launch { reload() } }
       tab.value == MainTab.Storage -> StorageTab(allFiles.value) { reloadScope -> reloadScope.launch { reload() } }
       tab.value == MainTab.Insights -> InsightsTab(allFiles.value)
     }
@@ -153,17 +151,31 @@ fun DownloadManagerView(close: () -> Unit) {
 
 // --- Browse tab: filters, search, sort, grid/list, multi-select, batch actions ------------------
 
+// Filter/sort/view selections live in this holder, NOT in composable `remember`, so they survive the
+// fullscreen media viewer being pushed on top of the Download Manager. Opening an image/video pushes
+// a new modal on the same ModalManager.fullscreen stack, which disposes this screen's composition;
+// with `remember` the filters snapped back to "All" on return (the reported bug). Object-level
+// snapshot state persists across that push/pop.
+private object BrowseState {
+  val category = mutableStateOf<FileCategory?>(null)
+  val status = mutableStateOf(DownloadStatusFilter.All)
+  val favoritesOnly = mutableStateOf(false)
+  val sort = mutableStateOf(SortOrder.Newest)
+  val viewMode = mutableStateOf(ViewMode.Grid)
+  val query = mutableStateOf("")
+}
+
 @Composable
 private fun BrowseTab(all: List<UnifiedFileEntry>, reload: suspend (Boolean) -> Unit) {
   val scope = rememberCoroutineScope()
   val actionMsg = remember { mutableStateOf("") }
   val busy = remember { mutableStateOf<String?>(null) } // non-null while a long delete/cleanup runs
-  val category = remember { mutableStateOf<FileCategory?>(null) }
-  val status = remember { mutableStateOf(DownloadStatusFilter.All) }
-  val favoritesOnly = remember { mutableStateOf(false) }
-  val sort = remember { mutableStateOf(SortOrder.Newest) }
-  val viewMode = remember { mutableStateOf(ViewMode.Grid) }
-  val query = remember { mutableStateOf("") }
+  val category = BrowseState.category
+  val status = BrowseState.status
+  val favoritesOnly = BrowseState.favoritesOnly
+  val sort = BrowseState.sort
+  val viewMode = BrowseState.viewMode
+  val query = BrowseState.query
   val selected = remember { mutableStateListOf<Long>() }
   val favToggle = remember { mutableStateOf(0) } // bump to force favorite-icon recomposition
 
@@ -684,85 +696,6 @@ private fun BatchActionBar(scope: CoroutineScope, entries: List<UnifiedFileEntry
   }
 }
 
-// --- Duplicates tab --------------------------------------------------------------------------------
-
-@Composable
-private fun DuplicatesTab(all: List<UnifiedFileEntry>, onReload: (kotlinx.coroutines.CoroutineScope) -> Unit) {
-  val scope = rememberCoroutineScope()
-  val groups = remember { mutableStateOf<List<DuplicateGroup>?>(null) }
-  val scanning = remember { mutableStateOf(true) }
-
-  LaunchedEffect(all) {
-    scanning.value = true
-    groups.value = findDuplicates(all)
-    scanning.value = false
-  }
-
-  when {
-    scanning.value -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
-    groups.value.isNullOrEmpty() -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-      Text("No duplicate files found.", color = MaterialTheme.colors.secondary, modifier = Modifier.padding(24.dp))
-    }
-    else -> {
-      val g = groups.value!!
-      val totalReclaimable = g.sumOf { it.reclaimableBytes }
-      Column(Modifier.fillMaxSize()) {
-        Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-          Text("${g.size} duplicate groups · ${formatBytes(totalReclaimable)} reclaimable", fontSize = 13.sp, color = MaterialTheme.colors.secondary)
-          Spacer(Modifier.weight(1f))
-          TextButton(onClick = {
-            AlertManager.shared.showAlertDialog(
-              title = "Clean up ${g.size} duplicate groups?",
-              text = "Removes the local copy of every duplicate, keeping the oldest of each. This device only — senders and other devices are not affected.",
-              confirmText = "Clean up",
-              destructive = true,
-              onConfirm = {
-                scope.launch {
-                  g.forEach { grp -> deleteLocalCopies(grp.removable) }
-                  onReload(scope)
-                }
-              }
-            )
-          }) { Text("Clean up all") }
-        }
-        Divider()
-        LazyColumn(Modifier.fillMaxSize()) {
-          items(g, key = { it.hash }) { grp ->
-            DuplicateGroupRow(grp) { scope.launch { deleteLocalCopies(grp.removable); onReload(scope) } }
-            Divider()
-          }
-        }
-      }
-    }
-  }
-}
-
-@Composable
-private fun DuplicateGroupRow(grp: DuplicateGroup, onCleanup: () -> Unit) {
-  Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-    Icon(categoryIcon(grp.keep.category), contentDescription = null, tint = MaterialTheme.colors.secondary)
-    Column(Modifier.padding(start = 12.dp).weight(1f)) {
-      Text(grp.keep.fileName, fontSize = 14.sp, maxLines = 1)
-      Text(
-        "${grp.entries.size} copies · keeping oldest · ${formatBytes(grp.reclaimableBytes)} reclaimable",
-        fontSize = 12.sp, color = MaterialTheme.colors.secondary
-      )
-    }
-    TextButton(onClick = onCleanup) { Text("Clean up") }
-  }
-}
-
-// Removes the local file copy only (cidmInternal = this device's copy, sender/other devices
-// untouched) — never a network delete, never affects the chat for the other party.
-private suspend fun deleteLocalCopies(entries: List<UnifiedFileEntry>) {
-  entries.groupBy { it.chat }.forEach { (chat, es) ->
-    chatModel.controller.apiDeleteChatItems(
-      chat.remoteHostId, chat.chatInfo.chatType, chat.chatInfo.apiId, null,
-      es.map { it.item.id }, CIDeleteMode.cidmInternal
-    )
-  }
-}
-
 // --- Storage tab -------------------------------------------------------------------------------
 
 @Composable
@@ -881,8 +814,8 @@ private fun SetBudgetDialog(chat: Chat, onDismiss: () -> Unit) {
 @Composable
 private fun InsightsTab(all: List<UnifiedFileEntry>) {
   val local = remember(all) { all.filter { it.isLocal } }
-  val duplicates = remember(all) { findDuplicates(all) }
-  val health = remember(local, duplicates) { storageHealth(all, duplicates) }
+  // Duplicate detection removed — no hashing pass here (health score uses age/size signals only).
+  val health = remember(local) { storageHealth(all, emptyList()) }
   val ageDist = remember(local) { ageDistribution(all) }
   val largest = remember(local) { local.maxByOrNull { it.fileSize } }
   val totalAgeBytes = ageDist.values.sum().coerceAtLeast(1)

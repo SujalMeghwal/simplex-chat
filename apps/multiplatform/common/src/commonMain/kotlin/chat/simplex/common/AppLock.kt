@@ -249,6 +249,7 @@ object AppLock {
             DatabaseUtils.ksAppPassword.remove()
             selfDestructPref.set(false)
             DatabaseUtils.ksSelfDestructPassword.remove()
+            m.controller.appPrefs.selfDestructDisplayName.set(null)
           }
           is LAResult.Failed -> { /* Can be called multiple times on every failure */ }
           is LAResult.Error -> {

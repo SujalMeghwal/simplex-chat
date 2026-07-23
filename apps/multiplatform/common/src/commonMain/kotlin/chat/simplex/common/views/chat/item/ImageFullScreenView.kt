@@ -281,15 +281,19 @@ fun ImageFullScreenView(imageProvider: () -> ImageGalleryProvider, close: () -> 
           if (e.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
           when (e.key) {
             Key.DirectionLeft, Key.DirectionUp ->
-              if (provider.getMedia(curIndex.value - 1) != null) { curIndex.value -= 1; true } else true
+              if (provider.getMedia(curIndex.value - 1) != null) { curIndex.value -= 1; focusRequester.requestFocus(); true } else true
             Key.DirectionRight, Key.DirectionDown ->
-              if (provider.getMedia(curIndex.value + 1) != null) { curIndex.value += 1; true } else true
+              if (provider.getMedia(curIndex.value + 1) != null) { curIndex.value += 1; focusRequester.requestFocus(); true } else true
             Key.Escape -> { goBack(); true }
             else -> false
           }
         }
     ) {
       DesktopMediaContent(curIndex.value)
+      // After navigating, the newly shown media (a video player especially) can grab keyboard focus,
+      // which is why the FIRST arrow key worked but the next one did nothing. Re-assert focus on this
+      // Box every time the shown item changes so both arrows keep working through the whole gallery.
+      LaunchedEffect(curIndex.value) { focusRequester.requestFocus() }
       // Visible prev/next arrows so navigation is discoverable (not just the ←/→ keys). Clicking them
       // keeps focus on this Box (they re-request it) so the keyboard shortcuts keep working too.
       val hasPrev = provider.getMedia(curIndex.value - 1) != null
