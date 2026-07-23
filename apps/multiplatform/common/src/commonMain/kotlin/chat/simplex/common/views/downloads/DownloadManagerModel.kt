@@ -71,7 +71,35 @@ data class UnifiedFileEntry(
   val senderName: String get() = if (item.chatDir.sent) "me" else chat.chatInfo.displayName
   val chatName: String get() = chat.chatInfo.displayName
   val createdAt get() = item.meta.itemTs
+
+  // Identity of the underlying file, independent of which message/chat carries it. The same file
+  // sent, received, forwarded, or shared into a note folder produces different ChatItems (and
+  // different fileIds), but the media content is identical — so we key on the media preview
+  // (identical bytes for identical image/video) plus size, falling back to name+size for
+  // voice/documents. This is what collapses the "same file shows up N times" duplicates.
+  fun dedupKey(): String {
+    val previewSig = when (val mc = item.content.msgContent) {
+      is MsgContent.MCImage -> mc.image
+      is MsgContent.MCVideo -> mc.image
+      else -> null
+    }
+    return if (!previewSig.isNullOrEmpty()) "p:${previewSig.hashCode()}:$fileSize"
+    else "n:${fileName.lowercase()}:$fileSize"
+  }
 }
+
+// Collapse duplicate copies of the same file down to one entry. Keeps the most useful copy:
+// already-downloaded first, then one that's actively downloading, then the newest — so the surviving
+// tile is the one you can actually open. Deterministic ordering keeps the choice stable across reloads.
+fun List<UnifiedFileEntry>.dedupByContent(): List<UnifiedFileEntry> =
+  groupBy { it.dedupKey() }
+    .map { (_, group) ->
+      group.sortedWith(
+        compareByDescending<UnifiedFileEntry> { it.isLocal }
+          .thenByDescending { it.isDownloading }
+          .thenByDescending { it.createdAt }
+      ).first()
+    }
 
 // Computes SHA-256 of the decrypted on-disk bytes. Only ever called for files already local
 // (isLocal == true) — never triggers a download, never touches the network.
@@ -156,7 +184,9 @@ suspend fun loadAllFilesAcrossChats(pageSizePerChatPerTag: Int = 500): List<Unif
       res.first.chatItems.forEach { all.add(UnifiedFileEntry(it, chat, category)) }
     }
   }
-  return all.distinctBy { it.item.id }
+  // distinctBy id drops the exact-same message pulled under two tags; dedupByContent then collapses
+  // send/forward/share copies of the same underlying file so each unique file appears exactly once.
+  return all.distinctBy { it.item.id }.dedupByContent()
 }
 
 fun List<UnifiedFileEntry>.applyFilters(

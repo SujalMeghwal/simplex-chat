@@ -272,6 +272,30 @@ fun ImageFullScreenView(imageProvider: () -> ImageGalleryProvider, close: () -> 
     // media — no pager, no index "recentering" (which was the source of the broken arrows).
     val focusRequester = remember { FocusRequester() }
     val curIndex = remember { mutableStateOf(provider.initialIndex) }
+    // Video shortcuts operate on whatever video is currently shown fullscreen. Arrows stay reserved
+    // for gallery navigation (they also work for images), so playback keys are the player-standard
+    // J/L (seek), Space/K (play-pause), M (mute), , / . (frame step) — no conflict.
+    fun handleVideoKey(key: Key): Boolean {
+      val p = ActiveFullscreenPlayer.player ?: return false
+      when (key) {
+        Key.Spacebar, Key.K -> if (p.videoPlaying.value) p.pause() else p.play(true)
+        Key.J -> p.seekTo(p.progress.value - 10_000)
+        Key.L -> p.seekTo(p.progress.value + 10_000)
+        Key.M -> p.setMuted(!p.muted.value)
+        Key.Comma -> p.seekTo(p.progress.value - 40)
+        Key.Period -> p.seekTo(p.progress.value + 40)
+        else -> return false
+      }
+      focusRequester.requestFocus()
+      return true
+    }
+    // Autoplay-next: when a clip finishes (loop off), advance to the next gallery item.
+    DisposableEffect(Unit) {
+      GalleryAutoplay.onVideoEnded = {
+        if (provider.getMedia(curIndex.value + 1) != null) { curIndex.value += 1; focusRequester.requestFocus() }
+      }
+      onDispose { GalleryAutoplay.onVideoEnded = null }
+    }
     Box(
       Modifier
         .fillMaxSize()
@@ -285,7 +309,7 @@ fun ImageFullScreenView(imageProvider: () -> ImageGalleryProvider, close: () -> 
             Key.DirectionRight, Key.DirectionDown ->
               if (provider.getMedia(curIndex.value + 1) != null) { curIndex.value += 1; focusRequester.requestFocus(); true } else true
             Key.Escape -> { goBack(); true }
-            else -> false
+            else -> handleVideoKey(e.key)
           }
         }
     ) {
@@ -349,6 +373,13 @@ private fun VideoViewEncrypted(uriUnencrypted: MutableState<URI?>, fileSource: C
 private fun VideoView(modifier: Modifier, uri: URI, defaultPreview: ImageBitmap, currentPage: Boolean, close: () -> Unit) {
   val player = remember(uri) { VideoPlayerHolder.getOrCreate(uri, true, defaultPreview, 0L, true) }
   val isCurrentPage = rememberUpdatedState(currentPage)
+  // Resume where this clip was last left off (session-only, in-memory). Seed progress before the
+  // first play() so its seek honours it; skip if we're within 3s of the start or end.
+  remember(uri) {
+    val r = VideoPlayerHolder.resumePositions[uri] ?: 0L
+    if (r > 3000) player.progress.value = r
+    true
+  }
   val play = {
     player.play(true)
   }
@@ -362,6 +393,18 @@ private fun VideoView(modifier: Modifier, uri: URI, defaultPreview: ImageBitmap,
         if (it) play() else stop()
         player.enableSound(true)
       }
+  }
+  // Expose this player to the gallery's keyboard shortcuts while it's the shown item, and remember
+  // the playback position so reopening resumes it.
+  DisposableEffect(uri) {
+    ActiveFullscreenPlayer.player = player
+    onDispose {
+      if (ActiveFullscreenPlayer.player === player) ActiveFullscreenPlayer.player = null
+      val p = player.progress.value
+      val d = player.duration.value
+      if (p > 3000 && (d == 0L || p < d - 3000)) VideoPlayerHolder.resumePositions[uri] = p
+      else VideoPlayerHolder.resumePositions.remove(uri)
+    }
   }
 
   Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {

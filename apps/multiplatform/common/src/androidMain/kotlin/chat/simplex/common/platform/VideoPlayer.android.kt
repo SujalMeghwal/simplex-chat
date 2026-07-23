@@ -32,6 +32,8 @@ actual class VideoPlayer actual constructor(
   override val progress: MutableState<Long> = mutableStateOf(0L)
   override val duration: MutableState<Long> = mutableStateOf(defaultDuration)
   override val preview: MutableState<ImageBitmap> = mutableStateOf(defaultPreview)
+  override val muted: MutableState<Boolean> = mutableStateOf(!soundEnabled)
+  override val volume: MutableState<Int> = mutableStateOf(100)
 
 
   // Currently unused because we use low-quality preview
@@ -186,6 +188,29 @@ actual class VideoPlayer actual constructor(
     soundEnabled.value = enable
     player.volume = if (enable) currentVolume else 0f
     return true
+  }
+
+  override fun pause() {
+    player.pause()
+    videoPlaying.value = false
+  }
+
+  override fun seekTo(ms: Long) {
+    val target = ms.coerceIn(0L, if (duration.value > 0) duration.value else Long.MAX_VALUE)
+    progress.value = target
+    player.seekTo(target)
+  }
+
+  override fun setMuted(m: Boolean) {
+    muted.value = m
+    player.volume = if (m) 0f else volume.value / 100f
+  }
+
+  override fun setVolume(v: Int) {
+    val vol = v.coerceIn(0, 100)
+    volume.value = vol
+    muted.value = vol == 0
+    player.volume = vol / 100f
   }
 
   override fun release(remove: Boolean) {

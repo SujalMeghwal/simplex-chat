@@ -33,6 +33,8 @@ actual class VideoPlayer actual constructor(
   override val progress: MutableState<Long> = mutableStateOf(0L)
   override val duration: MutableState<Long> = mutableStateOf(defaultDuration)
   override val preview: MutableState<ImageBitmap> = mutableStateOf(defaultPreview)
+  override val muted: MutableState<Boolean> = mutableStateOf(false)
+  override val volume: MutableState<Int> = mutableStateOf(100)
 
   val mediaPlayerComponent by lazy { getOrCreatePlayer() }
   val player by lazy { mediaPlayerComponent.mediaPlayer() }
@@ -66,7 +68,9 @@ actual class VideoPlayer actual constructor(
     VideoPlayerHolder.stopAll()
     if (listener.value == null) {
       runCatching {
-        player.media().prepare(uri.toFile().absolutePath)
+        // Local files are fully on disk — a big demux/file cache only adds start-up latency. A small
+        // cache + skipping audio time-stretch setup gets the first frame on screen noticeably faster.
+        player.media().prepare(uri.toFile().absolutePath, ":file-caching=200", ":no-audio-time-stretch")
         if (seek != null) {
           player.seekTo(seek.toInt())
         }
@@ -152,6 +156,36 @@ actual class VideoPlayer actual constructor(
         }
       }
     }
+  }
+
+  override fun pause() {
+    if (isReleased.get()) return
+    playerThread.execute { runCatching { player.pause() } }
+  }
+
+  override fun seekTo(ms: Long) {
+    if (isReleased.get()) return
+    val target = ms.coerceIn(0L, if (duration.value > 0) duration.value else Long.MAX_VALUE)
+    progress.value = target
+    playerThread.execute { runCatching { player.seekTo(target.toInt()) } }
+  }
+
+  override fun setMuted(m: Boolean) {
+    muted.value = m
+    if (isReleased.get()) return
+    playerThread.execute { runCatching { player.audio().isMute = m } }
+  }
+
+  // Per-player volume. On Windows VLCJ routes this through WASAPI, which also nudges SimpleX's entry
+  // in the Windows Volume Mixer — but that only happens now when the user deliberately drags the
+  // slider, not on every playback (which was the original bug this code avoided). Acceptable tradeoff
+  // for having an actual volume control.
+  override fun setVolume(v: Int) {
+    val vol = v.coerceIn(0, 100)
+    volume.value = vol
+    if (vol == 0) muted.value = true else if (muted.value) muted.value = false
+    if (isReleased.get()) return
+    playerThread.execute { runCatching { player.audio().setVolume(vol); player.audio().isMute = vol == 0 } }
   }
 
   override fun enableSound(enable: Boolean): Boolean {

@@ -43,6 +43,10 @@ import kotlinx.coroutines.launch
 
 private enum class MainTab { Browse, Storage, Insights }
 private enum class ViewMode { Grid, List }
+private enum class GroupMode { None, Chat, Date }
+private enum class DateRange(val label: String, val maxAgeDays: Long?) {
+  All("All time", null), Today("Today", 1), Week("7 days", 7), Month("30 days", 30), Year("1 year", 365)
+}
 
 @Composable
 fun DownloadManagerView(close: () -> Unit) {
@@ -163,6 +167,9 @@ private object BrowseState {
   val sort = mutableStateOf(SortOrder.Newest)
   val viewMode = mutableStateOf(ViewMode.Grid)
   val query = mutableStateOf("")
+  val collection = mutableStateOf<String?>(null) // active collection filter, null = all
+  val dateRange = mutableStateOf(DateRange.All)
+  val group = mutableStateOf(GroupMode.None)
 }
 
 @Composable
@@ -176,13 +183,41 @@ private fun BrowseTab(all: List<UnifiedFileEntry>, reload: suspend (Boolean) -> 
   val sort = BrowseState.sort
   val viewMode = BrowseState.viewMode
   val query = BrowseState.query
+  val collection = BrowseState.collection
+  val dateRange = BrowseState.dateRange
+  val group = BrowseState.group
   val selected = remember { mutableStateListOf<Long>() }
   val favToggle = remember { mutableStateOf(0) } // bump to force favorite-icon recomposition
+  val collectionsBump = remember { mutableStateOf(0) } // bump after collection membership changes
+  val collectionNames = remember(collectionsBump.value, all) { LocalFileVault.collectionNames() }
 
-  val filtered = remember(all, category.value, status.value, favoritesOnly.value, query.value, sort.value, favToggle.value) {
-    all.applyFilters(category.value, status.value, favoritesOnly.value, null, query.value).sortedBy(sort.value)
+  val filtered = remember(all, category.value, status.value, favoritesOnly.value, query.value, sort.value, favToggle.value, collection.value, dateRange.value, collectionsBump.value) {
+    val now = kotlinx.datetime.Clock.System.now()
+    all.applyFilters(category.value, status.value, favoritesOnly.value, collection.value, query.value)
+      .filter { e -> dateRange.value.maxAgeDays?.let { (now - e.createdAt).inWholeDays <= it } ?: true }
+      .sortedBy(sort.value)
   }
   val byId = remember(filtered) { filtered.associateBy { it.fileId } }
+
+  // Non-null while the add-to-collection dialog is open (for one entry or the whole selection).
+  val collectionTarget = remember { mutableStateOf<List<UnifiedFileEntry>?>(null) }
+  val fileActions = remember {
+    FileEntryActions(
+      open = { e -> if (e.isLocal) openEntryFile(e) else scope.launch { actionMsg.value = downloadRespectingPrivacy(listOf(e)); reload(false) } },
+      reveal = { e -> revealEntry(e) },
+      favorite = { e -> scope.launch { e.fileId?.let { LocalFileVault.toggleFavorite(chatModel.remoteHostId(), it) }; favToggle.value++ } },
+      retry = { e -> scope.launch { actionMsg.value = downloadRespectingPrivacy(listOf(e)); reload(false) } },
+      delete = { e ->
+        AlertManager.shared.showAlertDialog(
+          title = "Delete file?",
+          text = "Removes the local copy on this device only. Senders and other devices are not affected.",
+          confirmText = "Delete", destructive = true,
+          onConfirm = { scope.launch { busy.value = "Deleting…"; try { deleteEntriesLocal(listOf(e)); reload(false) } finally { busy.value = null } } }
+        )
+      },
+      addToCollection = { e -> collectionTarget.value = listOf(e) },
+    )
+  }
 
   fun toggleSelect(id: Long) { if (!selected.remove(id)) selected.add(id) }
 
@@ -241,12 +276,27 @@ private fun BrowseTab(all: List<UnifiedFileEntry>, reload: suspend (Boolean) -> 
       item { FilterChip("★ Favorites", favoritesOnly.value) { favoritesOnly.value = !favoritesOnly.value } }
     }
 
-    // Sort + view-mode toggle — plain text, no icon guesswork, always legible.
+    // Date-range + collection chips — collections are user-made groups; clicking one shows only its
+    // files (already deduped, so no file appears twice inside a collection).
+    LazyRow(
+      Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp),
+      horizontalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+      items(DateRange.entries) { r -> FilterChip(r.label, dateRange.value == r) { dateRange.value = r } }
+      if (collectionNames.isNotEmpty()) {
+        item { Divider(Modifier.width(1.dp).height(24.dp)) }
+        item { FilterChip("All collections", collection.value == null) { collection.value = null } }
+        items(collectionNames) { name -> FilterChip("▤ $name", collection.value == name) { collection.value = if (collection.value == name) null else name } }
+      }
+    }
+
+    // Sort + group + view-mode toggle — plain text, no icon guesswork, always legible.
     Row(
       Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp),
       verticalAlignment = Alignment.CenterVertically
     ) {
       SortDropdown(sort.value) { sort.value = it }
+      GroupDropdown(group.value) { group.value = it }
       Spacer(Modifier.weight(1f))
       TextButton(onClick = { viewMode.value = if (viewMode.value == ViewMode.Grid) ViewMode.List else ViewMode.Grid }) {
         Text(if (viewMode.value == ViewMode.Grid) "List view" else "Grid view")
@@ -256,6 +306,7 @@ private fun BrowseTab(all: List<UnifiedFileEntry>, reload: suspend (Boolean) -> 
     // Bulk actions — pick many at once, or grab everything pending, without tapping each tile.
     val filteredIds = remember(filtered) { filtered.mapNotNull { it.fileId } }
     val pending = remember(filtered) { filtered.filter { it.isPending } }
+    val failed = remember(filtered) { filtered.filter { it.isFailed } }
     val allSelected = filteredIds.isNotEmpty() && selected.containsAll(filteredIds)
     Row(
       Modifier.fillMaxWidth().padding(horizontal = 8.dp),
@@ -287,6 +338,11 @@ private fun BrowseTab(all: List<UnifiedFileEntry>, reload: suspend (Boolean) -> 
           }
         }) { Text("Download all (${pending.size})") }
       }
+      if (failed.isNotEmpty()) {
+        TextButton(onClick = {
+          scope.launch { actionMsg.value = downloadRespectingPrivacy(failed); reload(false) }
+        }) { Text("Retry failed (${failed.size})") }
+      }
     }
     if (actionMsg.value.isNotEmpty()) {
       Text(actionMsg.value, fontSize = 11.sp, color = MaterialTheme.colors.primary, modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp))
@@ -303,8 +359,10 @@ private fun BrowseTab(all: List<UnifiedFileEntry>, reload: suspend (Boolean) -> 
             modifier = Modifier.padding(24.dp)
           )
         }
-        viewMode.value == ViewMode.Grid -> FileGrid(filtered, selected, onOpen = { openItem(it) }) { toggleSelect(it) }
-        else -> FileList(filtered, selected, onOpen = { openItem(it) }) { toggleSelect(it) }
+        // Grouping only makes sense with headers, so any active grouping renders as a list.
+        viewMode.value == ViewMode.Grid && group.value == GroupMode.None ->
+          FileGrid(filtered, selected, fileActions, onOpen = { openItem(it) }) { toggleSelect(it) }
+        else -> FileList(filtered, selected, fileActions, group.value, onOpen = { openItem(it) }) { toggleSelect(it) }
       }
     }
 
@@ -313,7 +371,7 @@ private fun BrowseTab(all: List<UnifiedFileEntry>, reload: suspend (Boolean) -> 
     // the selection removes the bar, and a coroutine started on the bar's own scope would be cancelled
     // mid-delete, freezing the progress overlay. BrowseTab's scope outlives the selection.
     if (selected.isNotEmpty()) {
-      BatchActionBar(scope, selected.mapNotNull { byId[it] }, onClear = { selected.clear() }, onChanged = { favToggle.value++ }, reload = reload, onMsg = { actionMsg.value = it }, setBusy = { busy.value = it })
+      BatchActionBar(scope, selected.mapNotNull { byId[it] }, onClear = { selected.clear() }, onChanged = { favToggle.value++ }, reload = reload, onMsg = { actionMsg.value = it }, setBusy = { busy.value = it }, onAddToCollection = { es -> collectionTarget.value = es })
     }
   }
 
@@ -339,7 +397,54 @@ private fun BrowseTab(all: List<UnifiedFileEntry>, reload: suspend (Boolean) -> 
         }
       }
     }
+
+    val ct = collectionTarget.value
+    if (ct != null) {
+      AddToCollectionDialog(
+        existing = collectionNames,
+        count = ct.size,
+        onDismiss = { collectionTarget.value = null },
+        onPick = { name ->
+          scope.launch {
+            addEntriesToCollection(name, ct)
+            collectionsBump.value++
+            actionMsg.value = "Added ${ct.size} to \"$name\""
+            collectionTarget.value = null
+          }
+        }
+      )
+    }
   }
+}
+
+@Composable
+private fun AddToCollectionDialog(existing: List<String>, count: Int, onDismiss: () -> Unit, onPick: (String) -> Unit) {
+  val newName = remember { mutableStateOf("") }
+  AlertDialog(
+    onDismissRequest = onDismiss,
+    title = { Text("Add $count file(s) to collection") },
+    text = {
+      Column {
+        if (existing.isNotEmpty()) {
+          Text("Pick an existing collection:", fontSize = 13.sp, color = MaterialTheme.colors.secondary)
+          existing.forEach { name ->
+            Text(
+              "▤ $name",
+              fontSize = 15.sp,
+              modifier = Modifier.fillMaxWidth().clickable { onPick(name) }.padding(vertical = 8.dp)
+            )
+          }
+          Divider(Modifier.padding(vertical = 6.dp))
+        }
+        Text("Or create a new one:", fontSize = 13.sp, color = MaterialTheme.colors.secondary)
+        OutlinedTextField(value = newName.value, onValueChange = { newName.value = it }, placeholder = { Text("Collection name") }, singleLine = true)
+      }
+    },
+    confirmButton = {
+      TextButton(enabled = newName.value.isNotBlank(), onClick = { onPick(newName.value.trim()) }) { Text("Create & add") }
+    },
+    dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+  )
 }
 
 @Composable
@@ -380,7 +485,7 @@ private fun sortLabel(order: SortOrder) = when (order) {
 }
 
 @Composable
-private fun FileGrid(entries: List<UnifiedFileEntry>, selected: SnapshotStateList<Long>, onOpen: (UnifiedFileEntry) -> Unit, onToggle: (Long) -> Unit) {
+private fun FileGrid(entries: List<UnifiedFileEntry>, selected: SnapshotStateList<Long>, actions: FileEntryActions, onOpen: (UnifiedFileEntry) -> Unit, onToggle: (Long) -> Unit) {
   LazyVerticalGrid(
     columns = GridCells.Adaptive(minSize = 168.dp),
     modifier = Modifier.fillMaxSize(),
@@ -389,24 +494,54 @@ private fun FileGrid(entries: List<UnifiedFileEntry>, selected: SnapshotStateLis
     verticalArrangement = Arrangement.spacedBy(8.dp)
   ) {
     items(entries, key = { it.item.id }) { e ->
-      GridTile(e, selected.contains(e.fileId), onOpen = { onOpen(e) }) { onToggle(e.fileId ?: return@GridTile) }
+      GridTile(e, selected.contains(e.fileId), actions, onOpen = { onOpen(e) }) { onToggle(e.fileId ?: return@GridTile) }
     }
   }
 }
 
+// Buckets entries for the group-by-date header. Uses the same coarse buckets people expect.
+private fun dateBucket(e: UnifiedFileEntry): String {
+  val days = (kotlinx.datetime.Clock.System.now() - e.createdAt).inWholeDays
+  return when {
+    days <= 0 -> "Today"
+    days <= 1 -> "Yesterday"
+    days <= 7 -> "This week"
+    days <= 30 -> "This month"
+    days <= 365 -> "This year"
+    else -> "Older"
+  }
+}
+
 @Composable
-private fun FileList(entries: List<UnifiedFileEntry>, selected: SnapshotStateList<Long>, onOpen: (UnifiedFileEntry) -> Unit, onToggle: (Long) -> Unit) {
+private fun FileList(entries: List<UnifiedFileEntry>, selected: SnapshotStateList<Long>, actions: FileEntryActions, group: GroupMode, onOpen: (UnifiedFileEntry) -> Unit, onToggle: (Long) -> Unit) {
+  // Preserve the incoming sort order within each group by using a LinkedHashMap.
+  val groups: List<Pair<String?, List<UnifiedFileEntry>>> = when (group) {
+    GroupMode.None -> listOf(null to entries)
+    GroupMode.Chat -> entries.groupByTo(LinkedHashMap()) { it.chatName }.map { it.key to it.value }
+    GroupMode.Date -> entries.groupByTo(LinkedHashMap()) { dateBucket(it) }.map { it.key to it.value }
+  }
   LazyColumn(Modifier.fillMaxSize()) {
-    items(entries, key = { it.item.id }) { e ->
-      ListRow(e, selected.contains(e.fileId), onOpen = { onOpen(e) }) { onToggle(e.fileId ?: return@ListRow) }
-      Divider()
+    groups.forEach { (header, groupEntries) ->
+      if (header != null) {
+        item(key = "hdr_$header") {
+          Text(
+            "$header · ${groupEntries.size}",
+            fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colors.secondary,
+            modifier = Modifier.fillMaxWidth().background(MaterialTheme.colors.background).padding(horizontal = 12.dp, vertical = 6.dp)
+          )
+        }
+      }
+      items(groupEntries, key = { it.item.id }) { e ->
+        ListRow(e, selected.contains(e.fileId), actions, onOpen = { onOpen(e) }) { onToggle(e.fileId ?: return@ListRow) }
+        Divider()
+      }
     }
   }
 }
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun GridTile(e: UnifiedFileEntry, isSelected: Boolean, onOpen: () -> Unit, onToggle: () -> Unit) {
+private fun GridTile(e: UnifiedFileEntry, isSelected: Boolean, actions: FileEntryActions, onOpen: () -> Unit, onToggle: () -> Unit) {
   val b64 = when (val mc = e.item.content.msgContent) {
     is MsgContent.MCImage -> mc.image
     is MsgContent.MCVideo -> mc.image
@@ -421,12 +556,15 @@ private fun GridTile(e: UnifiedFileEntry, isSelected: Boolean, onOpen: () -> Uni
     liveProg != null && liveProg.second > 0 -> (liveProg.first * 100 / liveProg.second).toInt().coerceIn(0, 100)
     else -> e.progressPct
   }
+  val menu = remember { mutableStateOf(false) }
   val base = Modifier.aspectRatio(1f).clip(RoundedCornerShape(6.dp)).background(Color.Black.copy(alpha = 0.15f))
   Box(
     (if (isSelected) base.border(3.dp, MaterialTheme.colors.primary, RoundedCornerShape(6.dp)) else base)
-      .combinedClickable(onClick = { onToggle() }, onDoubleClick = { onOpen() }),
+      .combinedClickable(onClick = { onToggle() }, onDoubleClick = { onOpen() }, onLongClick = { menu.value = true })
+      .onRightClick { menu.value = true },
     contentAlignment = Alignment.Center
   ) {
+    EntryContextMenu(e, menu, actions)
     if (bitmap != null) {
       Image(bitmap, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
     } else {
@@ -468,20 +606,23 @@ private fun GridTile(e: UnifiedFileEntry, isSelected: Boolean, onOpen: () -> Uni
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun ListRow(e: UnifiedFileEntry, isSelected: Boolean, onOpen: () -> Unit, onToggle: () -> Unit) {
+private fun ListRow(e: UnifiedFileEntry, isSelected: Boolean, actions: FileEntryActions, onOpen: () -> Unit, onToggle: () -> Unit) {
   val liveProg = e.fileId?.let { chatModel.fileProgress[it] }
   val downloading = liveProg != null || e.isDownloading
   val livePct = when {
     liveProg != null && liveProg.second > 0 -> (liveProg.first * 100 / liveProg.second).toInt().coerceIn(0, 100)
     else -> e.progressPct
   }
+  val menu = remember { mutableStateOf(false) }
   Row(
     Modifier.fillMaxWidth()
-      .combinedClickable(onClick = { onToggle() }, onDoubleClick = { onOpen() })
+      .combinedClickable(onClick = { onToggle() }, onDoubleClick = { onOpen() }, onLongClick = { menu.value = true })
+      .onRightClick { menu.value = true }
       .background(if (isSelected) MaterialTheme.colors.primary.copy(alpha = 0.1f) else Color.Transparent)
       .padding(horizontal = 12.dp, vertical = 8.dp),
     verticalAlignment = Alignment.CenterVertically
   ) {
+    EntryContextMenu(e, menu, actions)
     Icon(categoryIcon(e.category), contentDescription = null, tint = MaterialTheme.colors.secondary, modifier = Modifier.size(28.dp))
     Column(Modifier.padding(start = 12.dp).weight(1f)) {
       Text(e.fileName, fontSize = 14.sp, maxLines = 1)
@@ -489,13 +630,15 @@ private fun ListRow(e: UnifiedFileEntry, isSelected: Boolean, onOpen: () -> Unit
         "${e.chatName} · ${e.senderName} · ${formatBytes(e.fileSize)}",
         fontSize = 12.sp, color = MaterialTheme.colors.secondary, maxLines = 1
       )
-      // While downloading, show exactly how much of THIS file has arrived and its live speed —
-      // "3.2 MB / 8.0 MB · 1.1 MB/s" — so per-file progress is visible without opening anything.
+      // While downloading, show exactly how much of THIS file has arrived, its live speed, and ETA —
+      // "3.2 MB / 8.0 MB · 1.1 MB/s · 4s left" — so per-file progress is visible without opening.
       if (downloading && liveProg != null) {
         val spd = e.fileId?.let { chatModel.fileSpeed[it] } ?: 0L
         val speedPart = if (spd > 0) " · ${formatSpeed(spd)}" else ""
+        val eta = formatEta(liveProg.second - liveProg.first, spd)
+        val etaPart = if (eta.isNotEmpty()) " · $eta" else ""
         Text(
-          "${formatBytes(liveProg.first)} / ${formatBytes(liveProg.second)}$speedPart",
+          "${formatBytes(liveProg.first)} / ${formatBytes(liveProg.second)}$speedPart$etaPart",
           fontSize = 11.sp, color = MaterialTheme.colors.primary, maxLines = 1
         )
       }
@@ -539,6 +682,30 @@ fun formatBytes(bytes: Long): String {
 }
 
 fun formatSpeed(bytesPerSec: Long): String = if (bytesPerSec <= 0) "" else "${formatBytes(bytesPerSec)}/s"
+
+// Rough time-remaining from live speed. Empty when we can't estimate (no speed / already done).
+fun formatEta(remainingBytes: Long, bytesPerSec: Long): String {
+  if (bytesPerSec <= 0 || remainingBytes <= 0) return ""
+  val secs = remainingBytes / bytesPerSec
+  return when {
+    secs < 60 -> "${secs}s left"
+    secs < 3600 -> "${secs / 60}m ${secs % 60}s left"
+    else -> "${secs / 3600}h ${(secs % 3600) / 60}m left"
+  }
+}
+
+// Open a downloaded file in the OS default app. No-op if the file isn't local yet.
+fun openEntryFile(e: UnifiedFileEntry) {
+  val fs = e.item.file?.fileSource ?: return
+  if (e.isLocal) openFile(fs)
+}
+
+// Show the file's folder in the system file manager (desktop only; Android has no folder concept here).
+fun revealEntry(e: UnifiedFileEntry) {
+  val path = e.item.file?.let { getLoadedFilePath(it) } ?: return
+  val parent = java.io.File(path).parentFile ?: return
+  desktopOpenDir(parent)
+}
 
 // Downloads only what won't leak the user's IP. Files already reachable via trusted relays start
 // downloading; any file whose download would expose the IP to unknown XFTP relays is NOT downloaded
@@ -602,10 +769,76 @@ suspend fun stopDownloads(entries: List<UnifiedFileEntry>): String {
   return if (n > 0) "Stopped $n" else ""
 }
 
+// Local-only delete of the given files' copies on this device (chunked, grouped per chat).
+suspend fun deleteEntriesLocal(entries: List<UnifiedFileEntry>) {
+  entries.chunked(50).forEach { chunk ->
+    chunk.groupBy { it.chat }.forEach { (chat, group) ->
+      chatModel.controller.apiDeleteChatItems(
+        chat.remoteHostId, chat.chatInfo.chatType, chat.chatInfo.apiId, null,
+        group.map { it.item.id }, CIDeleteMode.cidmInternal
+      )
+    }
+  }
+}
+
+// Add files to a named user collection (created on first use). Stored in chat.db, this device only.
+suspend fun addEntriesToCollection(name: String, entries: List<UnifiedFileEntry>) {
+  val rhId = chatModel.remoteHostId()
+  entries.forEach { e -> e.fileId?.let { LocalFileVault.addToCollection(rhId, name, it) } }
+}
+
+// Per-file actions wired once in BrowseTab and passed down to every tile/row context menu.
+class FileEntryActions(
+  val open: (UnifiedFileEntry) -> Unit,
+  val reveal: (UnifiedFileEntry) -> Unit,
+  val favorite: (UnifiedFileEntry) -> Unit,
+  val retry: (UnifiedFileEntry) -> Unit,
+  val delete: (UnifiedFileEntry) -> Unit,
+  val addToCollection: (UnifiedFileEntry) -> Unit,
+)
+
+@Composable
+private fun GroupDropdown(current: GroupMode, onSelect: (GroupMode) -> Unit) {
+  val expanded = remember { mutableStateOf(false) }
+  Box {
+    TextButton(onClick = { expanded.value = true }) {
+      Text("Group: " + when (current) { GroupMode.None -> "None"; GroupMode.Chat -> "Chat"; GroupMode.Date -> "Date" })
+    }
+    DropdownMenu(expanded = expanded.value, onDismissRequest = { expanded.value = false }) {
+      GroupMode.entries.forEach { g ->
+        DropdownMenuItem(onClick = { onSelect(g); expanded.value = false }) {
+          Text(when (g) { GroupMode.None -> "None"; GroupMode.Chat -> "By chat"; GroupMode.Date -> "By date" })
+        }
+      }
+    }
+  }
+}
+
+// Right-click / long-press menu shared by grid tiles and list rows.
+@Composable
+private fun EntryContextMenu(e: UnifiedFileEntry, expanded: MutableState<Boolean>, actions: FileEntryActions) {
+  DropdownMenu(expanded = expanded.value, onDismissRequest = { expanded.value = false }) {
+    if (e.isLocal && (e.category == FileCategory.Image || e.category == FileCategory.Video || e.category == FileCategory.File)) {
+      DropdownMenuItem(onClick = { expanded.value = false; actions.open(e) }) { Text("Open") }
+      if (appPlatform.isDesktop) {
+        DropdownMenuItem(onClick = { expanded.value = false; actions.reveal(e) }) { Text("Reveal in folder") }
+      }
+    }
+    if (!e.isLocal && e.item.file != null) {
+      DropdownMenuItem(onClick = { expanded.value = false; actions.retry(e) }) { Text(if (e.isFailed) "Retry download" else "Download") }
+    }
+    DropdownMenuItem(onClick = { expanded.value = false; actions.favorite(e) }) {
+      Text(if (e.fileId != null && LocalFileVault.isFavorite(e.fileId!!)) "Unfavorite" else "Favorite")
+    }
+    DropdownMenuItem(onClick = { expanded.value = false; actions.addToCollection(e) }) { Text("Add to collection…") }
+    DropdownMenuItem(onClick = { expanded.value = false; actions.delete(e) }) { Text("Delete local copy") }
+  }
+}
+
 // --- Batch action bar ----------------------------------------------------------------------------
 
 @Composable
-private fun BatchActionBar(scope: CoroutineScope, entries: List<UnifiedFileEntry>, onClear: () -> Unit, onChanged: () -> Unit, reload: suspend (Boolean) -> Unit, onMsg: (String) -> Unit, setBusy: (String?) -> Unit) {
+private fun BatchActionBar(scope: CoroutineScope, entries: List<UnifiedFileEntry>, onClear: () -> Unit, onChanged: () -> Unit, reload: suspend (Boolean) -> Unit, onMsg: (String) -> Unit, setBusy: (String?) -> Unit, onAddToCollection: (List<UnifiedFileEntry>) -> Unit) {
   Surface(elevation = 8.dp, color = MaterialTheme.colors.surface) {
     Row(
       Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
@@ -622,6 +855,9 @@ private fun BatchActionBar(scope: CoroutineScope, entries: List<UnifiedFileEntry
             reload(false) // refresh now -> tiles flip to the downloading spinner; live loop keeps updating
           }
         }) { Icon(painterResource(MR.images.ic_download), contentDescription = "Download") }
+      }
+      WithTooltip("Add to collection") {
+        IconButton(onClick = { onAddToCollection(entries) }) { Icon(painterResource(MR.images.ic_folder_open), contentDescription = "Add to collection") }
       }
       WithTooltip("Pause download") {
         IconButton(onClick = {
