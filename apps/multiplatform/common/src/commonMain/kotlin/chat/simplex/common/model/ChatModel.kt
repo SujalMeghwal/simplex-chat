@@ -1200,11 +1200,16 @@ object ChatModel {
     }
   }
 
+  private val terminalItemsLock = Any()
   private fun addTerminalItem(item: TerminalItem, maxItems: Int) {
-    if (terminalItems.value.size >= maxItems) {
-      terminalItems.value = terminalItems.value.subList(1, terminalItems.value.size)
+    // Atomic read-modify-write: two callers reach here concurrently (one via withApi on Main, one
+    // direct on the caller's thread). The old code did `subList(1, size)`, which returns a VIEW
+    // backed by the list; reassigning the state to that view and sub-listing it again under a race
+    // threw IndexOutOfBoundsException. takeLast makes a fresh copy, and the lock serializes writers.
+    synchronized(terminalItemsLock) {
+      val next = terminalItems.value + item
+      terminalItems.value = if (next.size > maxItems) next.takeLast(maxItems) else next
     }
-    terminalItems.value += item
   }
 
   val connectedToRemote: Boolean @Composable get() = currentRemoteHost.value != null || remoteCtrlSession.value?.active == true

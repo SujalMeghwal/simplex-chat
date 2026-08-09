@@ -123,7 +123,30 @@ private fun ApplicationScope.AppWindow(closedByError: MutableState<Boolean>) {
   val showQuickSwitcher = remember { mutableStateOf(false) }
   // Reload all strings in all @Composable's after language change at runtime
   if (remember { ChatController.appPrefs.appLanguage.state }.value != "") {
-    Window(state = windowState, visible = simplexWindowState.windowVisible.value, icon = painterResource(MR.images.ic_simplex), onCloseRequest = { handleCloseRequest(closedByError) }, onKeyEvent = { e ->
+    Window(state = windowState, visible = simplexWindowState.windowVisible.value, icon = painterResource(MR.images.ic_simplex), onCloseRequest = { handleCloseRequest(closedByError) },
+      // Fullscreen media gallery keys are handled in the PREVIEW (tunnel) phase, before any focused
+      // child sees them. This is what makes Right/Down and Delete work: the video controls contain
+      // focusable IconButtons, and once one holds focus Compose consumes Right/Down for forward focus
+      // traversal (and other keys) so they never bubble to the plain onKeyEvent handler. Left/Up from
+      // the first focusable has no backward target, so it used to fall through — which is why only the
+      // left arrow "worked". Intercepting here fixes navigation regardless of what has focus.
+      onPreviewKeyEvent = { e ->
+        if (chatModel.fullscreenGalleryVisible.value && e.type == KeyEventType.KeyDown) {
+          when (e.key) {
+            Key.DirectionLeft, Key.DirectionUp -> { FullscreenGalleryController.prev?.invoke(); true }
+            Key.DirectionRight, Key.DirectionDown -> { FullscreenGalleryController.next?.invoke(); true }
+            Key.Spacebar, Key.K -> { FullscreenGalleryController.togglePlayPause?.invoke(); true }
+            Key.J -> { FullscreenGalleryController.seekRelative?.invoke(-10_000); true }
+            Key.L -> { FullscreenGalleryController.seekRelative?.invoke(10_000); true }
+            Key.M -> { FullscreenGalleryController.toggleMute?.invoke(); true }
+            Key.Comma -> { FullscreenGalleryController.seekRelative?.invoke(-40); true }
+            Key.Period -> { FullscreenGalleryController.seekRelative?.invoke(40); true }
+            Key.Delete, Key.Backspace -> { FullscreenGalleryController.deleteCurrent?.invoke(); true }
+            else -> false
+          }
+        } else false
+      },
+      onKeyEvent = { e ->
       when {
         e.isCtrlPressed && e.key == Key.K && e.type == KeyEventType.KeyDown -> {
           showQuickSwitcher.value = !showQuickSwitcher.value; true

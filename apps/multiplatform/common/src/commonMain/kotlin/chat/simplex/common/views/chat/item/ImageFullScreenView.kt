@@ -38,6 +38,9 @@ interface ImageGalleryProvider {
   fun currentPageChanged(index: Int)
   fun scrollToStart()
   fun onDismiss(index: Int)
+  // Delete the media shown at this index from this device (item + local file). Returns true if a
+  // deletable item was found. Default no-op keeps any other implementers working.
+  suspend fun deleteMediaAt(index: Int): Boolean = false
 }
 
 @Composable
@@ -257,7 +260,15 @@ fun ImageFullScreenView(imageProvider: () -> ImageGalleryProvider, close: () -> 
         val decrypted = uriDecrypted.value
         if (decrypted != null) {
           VideoView(modifier, decrypted, preview, true, close)
-          DisposableEffect(Unit) { onDispose { playersToRelease.add(decrypted) } }
+          // Keep a few recent players alive (LRU) so stepping back/forward reuses them instantly
+          // instead of cold-starting VLCJ every time — that cold start is why fast arrowing couldn't
+          // keep up. The cap stops players accumulating and choking the audio device; the rest are
+          // released when the gallery closes (playersToRelease / whenGone).
+          DisposableEffect(decrypted) {
+            VideoPlayerHolder.noteGalleryShown(decrypted)
+            playersToRelease.add(decrypted)
+            onDispose { }
+          }
         } else if (media.fileSource != null) {
           VideoViewEncrypted(uriDecrypted, media.fileSource, preview, close)
         }
@@ -270,71 +281,57 @@ fun ImageFullScreenView(imageProvider: () -> ImageGalleryProvider, close: () -> 
     // Desktop: no swipe. Each media item is a consecutive index in the provider (N = opened item,
     // N±1 = neighbours), so navigation is just stepping the index and asking the provider for that
     // media — no pager, no index "recentering" (which was the source of the broken arrows).
-    val focusRequester = remember { FocusRequester() }
     val curIndex = remember { mutableStateOf(provider.initialIndex) }
-    // Video shortcuts operate on whatever video is currently shown fullscreen. Arrows stay reserved
-    // for gallery navigation (they also work for images), so playback keys are the player-standard
-    // J/L (seek), Space/K (play-pause), M (mute), , / . (frame step) — no conflict.
-    fun handleVideoKey(key: Key): Boolean {
-      val p = ActiveFullscreenPlayer.player ?: return false
-      when (key) {
-        Key.Spacebar, Key.K -> if (p.videoPlaying.value) p.pause() else p.play(true)
-        Key.J -> p.seekTo(p.progress.value - 10_000)
-        Key.L -> p.seekTo(p.progress.value + 10_000)
-        Key.M -> p.setMuted(!p.muted.value)
-        Key.Comma -> p.seekTo(p.progress.value - 40)
-        Key.Period -> p.seekTo(p.progress.value + 40)
-        else -> return false
-      }
-      focusRequester.requestFocus()
-      return true
-    }
-    // Autoplay-next: when a clip finishes (loop off), advance to the next gallery item.
+    // Downloaded-only provider: getMedia returns non-null only for downloaded neighbours, so these
+    // also gate autoplay to downloaded media.
+    fun goPrev() { if (provider.getMedia(curIndex.value - 1) != null) curIndex.value -= 1 }
+    fun goNext() { if (provider.getMedia(curIndex.value + 1) != null) curIndex.value += 1 }
+    // Register nav + playback actions for the top-level Window key handler (see DesktopApp.kt).
+    // Driving keys from the Window instead of a focused Box is what fixes arrow navigation: the video
+    // player/surface would steal Compose focus, so a focused-Box handler only saw the first press and
+    // then locked to one direction. The Window handler always receives the key. Autoplay-next reuses
+    // goNext(), so it also only ever advances to downloaded media.
     DisposableEffect(Unit) {
-      GalleryAutoplay.onVideoEnded = {
-        if (provider.getMedia(curIndex.value + 1) != null) { curIndex.value += 1; focusRequester.requestFocus() }
+      FullscreenGalleryController.prev = { goPrev() }
+      FullscreenGalleryController.next = { goNext() }
+      FullscreenGalleryController.togglePlayPause = {
+        ActiveFullscreenPlayer.player?.let { if (it.videoPlaying.value) it.pause() else it.play(true) }
       }
-      onDispose { GalleryAutoplay.onVideoEnded = null }
-    }
-    Box(
-      Modifier
-        .fillMaxSize()
-        .focusRequester(focusRequester)
-        .focusable()
-        .onPreviewKeyEvent { e ->
-          if (e.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
-          when (e.key) {
-            Key.DirectionLeft, Key.DirectionUp ->
-              if (provider.getMedia(curIndex.value - 1) != null) { curIndex.value -= 1; focusRequester.requestFocus(); true } else true
-            Key.DirectionRight, Key.DirectionDown ->
-              if (provider.getMedia(curIndex.value + 1) != null) { curIndex.value += 1; focusRequester.requestFocus(); true } else true
-            Key.Escape -> { goBack(); true }
-            else -> handleVideoKey(e.key)
+      FullscreenGalleryController.seekRelative = { d ->
+        ActiveFullscreenPlayer.player?.let { it.seekTo(it.progress.value + d) }
+      }
+      FullscreenGalleryController.toggleMute = {
+        ActiveFullscreenPlayer.player?.let { it.setMuted(!it.muted.value) }
+      }
+      // Delete key: immediately remove the shown file from this device (+ downloads), no prompt, then
+      // shift to the next same-type item (to the right); fall back to the previous one, or close if
+      // that was the last. downloadedOnly navigation skips the just-deleted item (its file is gone).
+      FullscreenGalleryController.deleteCurrent = {
+        val idx = curIndex.value
+        scope.launch {
+          if (provider.deleteMediaAt(idx)) {
+            when {
+              provider.getMedia(idx + 1) != null -> curIndex.value = idx + 1
+              provider.getMedia(idx - 1) != null -> curIndex.value = idx - 1
+              else -> goBack()
+            }
           }
         }
-    ) {
+      }
+      GalleryAutoplay.onVideoEnded = { goNext() }
+      onDispose { FullscreenGalleryController.clear(); GalleryAutoplay.onVideoEnded = null; VideoPlayerHolder.clearGalleryShown() }
+    }
+    Box(Modifier.fillMaxSize()) {
       DesktopMediaContent(curIndex.value)
-      // After navigating, the newly shown media (a video player especially) can grab keyboard focus,
-      // which is why the FIRST arrow key worked but the next one did nothing. Re-assert focus on this
-      // Box every time the shown item changes so both arrows keep working through the whole gallery.
-      LaunchedEffect(curIndex.value) { focusRequester.requestFocus() }
-      // Visible prev/next arrows so navigation is discoverable (not just the ←/→ keys). Clicking them
-      // keeps focus on this Box (they re-request it) so the keyboard shortcuts keep working too.
+      // Visible prev/next arrows so navigation is discoverable (not just the ←/→ keys).
       val hasPrev = provider.getMedia(curIndex.value - 1) != null
       val hasNext = provider.getMedia(curIndex.value + 1) != null
       if (hasPrev) {
-        GalleryNavButton(MR.images.ic_arrow_back_ios_new, "Previous", Modifier.align(Alignment.CenterStart)) {
-          curIndex.value -= 1; focusRequester.requestFocus()
-        }
+        GalleryNavButton(MR.images.ic_arrow_back_ios_new, "Previous", Modifier.align(Alignment.CenterStart)) { goPrev() }
       }
       if (hasNext) {
-        GalleryNavButton(MR.images.ic_arrow_forward_ios, "Next", Modifier.align(Alignment.CenterEnd)) {
-          curIndex.value += 1; focusRequester.requestFocus()
-        }
+        GalleryNavButton(MR.images.ic_arrow_forward_ios, "Next", Modifier.align(Alignment.CenterEnd)) { goNext() }
       }
-    }
-    LaunchedEffect(Unit) {
-      focusRequester.requestFocus()
     }
   }
 }

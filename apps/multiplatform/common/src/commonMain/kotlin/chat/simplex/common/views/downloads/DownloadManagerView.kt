@@ -41,7 +41,6 @@ import kotlinx.coroutines.launch
 // on-disk file bytes for hashing) — no network call is made by this screen, nothing here is synced
 // to any other device.
 
-private enum class MainTab { Browse, Storage, Insights }
 private enum class ViewMode { Grid, List }
 private enum class GroupMode { None, Chat, Date }
 private enum class DateRange(val label: String, val maxAgeDays: Long?) {
@@ -50,32 +49,46 @@ private enum class DateRange(val label: String, val maxAgeDays: Long?) {
 
 @Composable
 fun DownloadManagerView(close: () -> Unit) {
-  val tab = remember { mutableStateOf(MainTab.Browse) }
   val allFiles = remember { mutableStateOf<List<UnifiedFileEntry>>(emptyList()) }
   val loading = remember { mutableStateOf(true) }
   val speedBps = remember { mutableStateOf(0L) } // aggregate download speed (bytes/s), sampled by the live loop
+  // True while a reload is in flight, so the periodic reconcile loop doesn't stack a second heavy
+  // cross-chat scan on top of one already running.
+  val reloading = remember { mutableStateOf(false) }
 
   // showSpinner=false does an in-place refresh (list stays visible) — used for post-download and the
   // periodic catch-up reloads so the view doesn't flash the full-screen spinner every couple seconds.
   suspend fun reload(showSpinner: Boolean = true) {
-    if (showSpinner) loading.value = true
-    val rhId = chatModel.remoteHostId()
-    LocalFileVault.load(rhId)
-    ChatStorageBudgets.load(rhId)
-    val files = loadAllFilesAcrossChats()
-    enforceStorageBudgets(files)
-    allFiles.value = if (files.any { ChatStorageBudgets.get(it.chat) != null }) loadAllFilesAcrossChats() else files
-    // Reconcile the live-progress overlays with reality: keep only files the core still reports as
-    // actively receiving. A transfer that finished, failed, or was cancelled between events would
-    // otherwise leave a stale entry — the "stuck at 0 / stuck at 75%" tiles the user saw. After this,
-    // a stalled tile means the core genuinely still lists it as transferring (a real stall to retry).
-    val active = allFiles.value.filter { it.isDownloading }.mapNotNull { it.fileId }.toHashSet()
-    chatModel.fileProgress.keys.retainAll(active)
-    chatModel.fileSpeed.keys.retainAll(active)
-    if (showSpinner) loading.value = false
+    reloading.value = true
+    try {
+      if (showSpinner) loading.value = true
+      val rhId = chatModel.remoteHostId()
+      LocalFileVault.load(rhId)
+      // Storage budgets are deliberately NOT auto-enforced here. Silently deleting the oldest local
+      // media every time this screen opens (or every few seconds during a download) is unconfirmed
+      // data loss — and, run over the content-deduped list, it would delete exactly the downloaded
+      // copy the user can open. Budget enforcement must be an explicit, user-confirmed action.
+      val files = loadAllFilesAcrossChats()
+      allFiles.value = files
+      // Reconcile the live-progress overlays with reality: keep only files the core still reports as
+      // actively receiving. A transfer that finished, failed, or was cancelled between events would
+      // otherwise leave a stale entry — the "stuck at 0 / stuck at 75%" tiles the user saw. After this,
+      // a stalled tile means the core genuinely still lists it as transferring (a real stall to retry).
+      val active = allFiles.value.filter { it.isDownloading }.mapNotNull { it.fileId }.toHashSet()
+      chatModel.fileProgress.keys.retainAll(active)
+      chatModel.fileSpeed.keys.retainAll(active)
+    } finally {
+      if (showSpinner) loading.value = false
+      reloading.value = false
+    }
   }
 
-  LaunchedEffect(Unit) { reload() }
+  LaunchedEffect(Unit) {
+    // Reset content filters if the active user profile changed since this screen was last open, so one
+    // profile's category/search/collection selection never carries into another profile's file list.
+    BrowseState.onUser(chatModel.currentUser.value?.userId)
+    reload()
+  }
 
   // Live progress + speed come from the event-fed chatModel.fileProgress map — cheap, no reload.
   // Sample once a second; prune finished transfers so counts and speed stay accurate.
@@ -108,7 +121,7 @@ fun DownloadManagerView(close: () -> Unit) {
   LaunchedEffect(Unit) {
     while (true) {
       delay(6000)
-      if (chatModel.fileProgress.isNotEmpty()) reload(false)
+      if (chatModel.fileProgress.isNotEmpty() && !reloading.value) reload(false)
     }
   }
 
@@ -136,19 +149,13 @@ fun DownloadManagerView(close: () -> Unit) {
         )
       }
     }
-    TabRow(selectedTabIndex = tab.value.ordinal, backgroundColor = MaterialTheme.colors.background) {
-      Tab(selected = tab.value == MainTab.Browse, onClick = { tab.value = MainTab.Browse }, text = { Text("Browse") })
-      Tab(selected = tab.value == MainTab.Storage, onClick = { tab.value = MainTab.Storage }, text = { Text("Storage") })
-      Tab(selected = tab.value == MainTab.Insights, onClick = { tab.value = MainTab.Insights }, text = { Text("Insights") })
-    }
     Divider()
-    when {
-      loading.value -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+    if (loading.value) {
+      Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         CircularProgressIndicator(color = MaterialTheme.colors.primary)
       }
-      tab.value == MainTab.Browse -> BrowseTab(allFiles.value) { showSpinner -> reload(showSpinner) }
-      tab.value == MainTab.Storage -> StorageTab(allFiles.value) { reloadScope -> reloadScope.launch { reload() } }
-      tab.value == MainTab.Insights -> InsightsTab(allFiles.value)
+    } else {
+      BrowseTab(allFiles.value) { showSpinner -> reload(showSpinner) }
     }
   }
 }
@@ -170,6 +177,24 @@ private object BrowseState {
   val collection = mutableStateOf<String?>(null) // active collection filter, null = all
   val dateRange = mutableStateOf(DateRange.All)
   val group = mutableStateOf(GroupMode.None)
+
+  // This state is process-global (survives the fullscreen viewer disposing this screen — see the note
+  // above). That persistence must NOT cross user profiles: a collection name or search string from
+  // profile A is meaningless — and mildly leaky — under profile B. Reset the content filters whenever
+  // the active user changes. viewMode/sort are harmless display prefs, kept across profiles.
+  private var lastUserId: Long? = null
+  fun onUser(userId: Long?) {
+    if (userId != lastUserId) {
+      category.value = null
+      status.value = DownloadStatusFilter.All
+      favoritesOnly.value = false
+      query.value = ""
+      collection.value = null
+      dateRange.value = DateRange.All
+      group.value = GroupMode.None
+      lastUserId = userId
+    }
+  }
 }
 
 @Composable
@@ -232,10 +257,20 @@ private fun BrowseTab(all: List<UnifiedFileEntry>, reload: suspend (Boolean) -> 
       scope.launch { actionMsg.value = downloadRespectingPrivacy(listOf(entry)); reload(false) }
       return
     }
-    val items = all.filter { it.category == FileCategory.Image || it.category == FileCategory.Video }
-      .map { it.item }.sortedBy { it.meta.createdAt }
+    val mediaEntries = all.filter { it.category == FileCategory.Image || it.category == FileCategory.Video }
+    val items = mediaEntries.map { it.item }.sortedBy { it.meta.createdAt }
+    val entryByItemId = mediaEntries.associateBy { it.item.id }
     ModalManager.fullscreen.showCustomModal { gClose ->
-      openGalleryModal({ downloadedOnly -> providerForGallery(items, entry.item.id, downloadedOnly) {} }, gClose)
+      openGalleryModal(
+        { downloadedOnly ->
+          providerForGallery(
+            items, entry.item.id, downloadedOnly,
+            // Delete key: remove this file from this device and from the download list.
+            deleteMedia = { ci -> entryByItemId[ci.id]?.let { deleteEntriesLocal(listOf(it)); reload(false) } }
+          ) {}
+        },
+        gClose
+      )
     }
   }
 
@@ -258,48 +293,52 @@ private fun BrowseTab(all: List<UnifiedFileEntry>, reload: suspend (Boolean) -> 
       modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)
     )
 
-    // Category + status + favorites chips — the "smart filters" from the spec, one tap each.
+    // All filters on one horizontally-scrollable line: category · status · date-range · collections,
+    // separated by thin dividers. One tap each. (Favorites filter removed per request.)
     LazyRow(
-      Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp),
-      horizontalArrangement = Arrangement.spacedBy(6.dp)
+      Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
+      horizontalArrangement = Arrangement.spacedBy(6.dp),
+      verticalAlignment = Alignment.CenterVertically
     ) {
       item { FilterChip("All", category.value == null) { category.value = null } }
       item { FilterChip("Images", category.value == FileCategory.Image) { category.value = FileCategory.Image } }
       item { FilterChip("Videos", category.value == FileCategory.Video) { category.value = FileCategory.Video } }
       item { FilterChip("Voice", category.value == FileCategory.Voice) { category.value = FileCategory.Voice } }
       item { FilterChip("Documents", category.value == FileCategory.File) { category.value = FileCategory.File } }
-      item { Divider(Modifier.width(1.dp).height(24.dp)) }
+      item { Divider(Modifier.width(1.dp).height(22.dp)) }
       item { FilterChip("Downloaded", status.value == DownloadStatusFilter.Downloaded) { status.value = if (status.value == DownloadStatusFilter.Downloaded) DownloadStatusFilter.All else DownloadStatusFilter.Downloaded } }
       item { FilterChip("Downloading", status.value == DownloadStatusFilter.Downloading) { status.value = if (status.value == DownloadStatusFilter.Downloading) DownloadStatusFilter.All else DownloadStatusFilter.Downloading } }
       item { FilterChip("Not downloaded", status.value == DownloadStatusFilter.Pending) { status.value = if (status.value == DownloadStatusFilter.Pending) DownloadStatusFilter.All else DownloadStatusFilter.Pending } }
       item { FilterChip("Failed", status.value == DownloadStatusFilter.Failed) { status.value = if (status.value == DownloadStatusFilter.Failed) DownloadStatusFilter.All else DownloadStatusFilter.Failed } }
-      item { FilterChip("★ Favorites", favoritesOnly.value) { favoritesOnly.value = !favoritesOnly.value } }
-    }
-
-    // Date-range + collection chips — collections are user-made groups; clicking one shows only its
-    // files (already deduped, so no file appears twice inside a collection).
-    LazyRow(
-      Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp),
-      horizontalArrangement = Arrangement.spacedBy(6.dp)
-    ) {
+      item { Divider(Modifier.width(1.dp).height(22.dp)) }
       items(DateRange.entries) { r -> FilterChip(r.label, dateRange.value == r) { dateRange.value = r } }
       if (collectionNames.isNotEmpty()) {
-        item { Divider(Modifier.width(1.dp).height(24.dp)) }
+        item { Divider(Modifier.width(1.dp).height(22.dp)) }
         item { FilterChip("All collections", collection.value == null) { collection.value = null } }
         items(collectionNames) { name -> FilterChip("▤ $name", collection.value == name) { collection.value = if (collection.value == name) null else name } }
       }
     }
 
-    // Sort + group + view-mode toggle — plain text, no icon guesswork, always legible.
-    Row(
-      Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp),
-      verticalAlignment = Alignment.CenterVertically
+    // Sort + group + view-mode toggle, as bordered pills grouped in a faint toolbar bar so they read
+    // as controls instead of loose blue links floating on black.
+    Surface(
+      color = MaterialTheme.colors.onSurface.copy(alpha = 0.03f),
+      shape = RoundedCornerShape(12.dp),
+      modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp)
     ) {
-      SortDropdown(sort.value) { sort.value = it }
-      GroupDropdown(group.value) { group.value = it }
-      Spacer(Modifier.weight(1f))
-      TextButton(onClick = { viewMode.value = if (viewMode.value == ViewMode.Grid) ViewMode.List else ViewMode.Grid }) {
-        Text(if (viewMode.value == ViewMode.Grid) "List view" else "Grid view")
+      Row(
+        Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+      ) {
+        SortDropdown(sort.value) { sort.value = it }
+        GroupDropdown(group.value) { group.value = it }
+        Spacer(Modifier.weight(1f))
+        ToolbarPill(
+          if (viewMode.value == ViewMode.Grid) "List view" else "Grid view",
+          onClick = { viewMode.value = if (viewMode.value == ViewMode.Grid) ViewMode.List else ViewMode.Grid },
+          caret = false
+        )
       }
     }
 
@@ -351,13 +390,39 @@ private fun BrowseTab(all: List<UnifiedFileEntry>, reload: suspend (Boolean) -> 
 
     Box(Modifier.weight(1f)) {
       when {
-        filtered.isEmpty() -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-          Text(
-            if (query.value.isNotBlank()) "No files match \"${query.value}\"." else "No files here yet. Images, videos, voice messages, and attachments from your chats will show up here once you receive them.",
-            color = MaterialTheme.colors.secondary,
-            textAlign = TextAlign.Center,
-            modifier = Modifier.padding(24.dp)
-          )
+        filtered.isEmpty() -> {
+          // Tell apart "you truly have nothing" from "your filters hid everything" — otherwise a busy
+          // download queue behind a Today/Downloaded filter reads as an empty, broken screen.
+          val filtersActive = category.value != null || status.value != DownloadStatusFilter.All ||
+            favoritesOnly.value || collection.value != null || dateRange.value != DateRange.All || query.value.isNotBlank()
+          Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(24.dp)) {
+              Icon(
+                painterResource(if (filtersActive) MR.images.ic_search else MR.images.ic_download),
+                contentDescription = null,
+                tint = MaterialTheme.colors.secondary.copy(alpha = 0.5f),
+                modifier = Modifier.size(48.dp).padding(bottom = 12.dp)
+              )
+              Text(
+                when {
+                  !filtersActive -> "No files here yet. Images, videos, voice messages, and attachments from your chats show up here once you receive them."
+                  all.isNotEmpty() -> "No files match your filters. You have ${all.size} file(s) — try widening or clearing the filters."
+                  else -> "No files here yet."
+                },
+                color = MaterialTheme.colors.secondary,
+                textAlign = TextAlign.Center
+              )
+              if (filtersActive) {
+                TextButton(
+                  onClick = {
+                    category.value = null; status.value = DownloadStatusFilter.All; favoritesOnly.value = false
+                    collection.value = null; dateRange.value = DateRange.All; query.value = ""
+                  },
+                  modifier = Modifier.padding(top = 8.dp)
+                ) { Text("Clear filters") }
+              }
+            }
+          }
         }
         // Grouping only makes sense with headers, so any active grouping renders as a list.
         viewMode.value == ViewMode.Grid && group.value == GroupMode.None ->
@@ -422,22 +487,42 @@ private fun AddToCollectionDialog(existing: List<String>, count: Int, onDismiss:
   val newName = remember { mutableStateOf("") }
   AlertDialog(
     onDismissRequest = onDismiss,
-    title = { Text("Add $count file(s) to collection") },
+    title = { Text("Add $count file${if (count == 1) "" else "s"} to a collection") },
     text = {
-      Column {
+      Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         if (existing.isNotEmpty()) {
-          Text("Pick an existing collection:", fontSize = 13.sp, color = MaterialTheme.colors.secondary)
+          Text("PICK AN EXISTING COLLECTION", fontSize = 11.sp, color = MaterialTheme.colors.secondary, letterSpacing = 0.8.sp)
           existing.forEach { name ->
-            Text(
-              "▤ $name",
-              fontSize = 15.sp,
-              modifier = Modifier.fillMaxWidth().clickable { onPick(name) }.padding(vertical = 8.dp)
-            )
+            Surface(
+              color = MaterialTheme.colors.onSurface.copy(alpha = 0.04f),
+              shape = RoundedCornerShape(10.dp),
+              modifier = Modifier.fillMaxWidth()
+            ) {
+              Row(
+                Modifier.clickable { onPick(name) }.padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically
+              ) {
+                Icon(painterResource(MR.images.ic_folder_closed), null, Modifier.size(20.dp), tint = MaterialTheme.colors.primary)
+                Text(name, fontSize = 15.sp, modifier = Modifier.padding(start = 10.dp).weight(1f))
+                Icon(painterResource(MR.images.ic_add), null, Modifier.size(18.dp), tint = MaterialTheme.colors.secondary)
+              }
+            }
           }
-          Divider(Modifier.padding(vertical = 6.dp))
+          Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Divider(Modifier.weight(1f))
+            Text("  or  ", fontSize = 12.sp, color = MaterialTheme.colors.secondary)
+            Divider(Modifier.weight(1f))
+          }
         }
-        Text("Or create a new one:", fontSize = 13.sp, color = MaterialTheme.colors.secondary)
-        OutlinedTextField(value = newName.value, onValueChange = { newName.value = it }, placeholder = { Text("Collection name") }, singleLine = true)
+        Text("CREATE A NEW COLLECTION", fontSize = 11.sp, color = MaterialTheme.colors.secondary, letterSpacing = 0.8.sp)
+        OutlinedTextField(
+          value = newName.value,
+          onValueChange = { newName.value = it },
+          placeholder = { Text("Collection name") },
+          leadingIcon = { Icon(painterResource(MR.images.ic_folder_open), null, Modifier.size(20.dp)) },
+          singleLine = true,
+          modifier = Modifier.fillMaxWidth()
+        )
       }
     },
     confirmButton = {
@@ -450,13 +535,39 @@ private fun AddToCollectionDialog(existing: List<String>, count: Int, onDismiss:
 @Composable
 private fun FilterChip(label: String, selected: Boolean, onClick: () -> Unit) {
   Surface(
-    color = if (selected) MaterialTheme.colors.primary else MaterialTheme.colors.surface,
+    // Unselected chips get a faint fill (not bare surface, which vanishes on the black background)
+    // plus a soft border; selected chips fill with the accent. Reads as a proper pill either way.
+    color = if (selected) MaterialTheme.colors.primary else MaterialTheme.colors.onSurface.copy(alpha = 0.06f),
     contentColor = if (selected) Color.White else MaterialTheme.colors.onSurface,
-    shape = RoundedCornerShape(16.dp),
-    border = if (!selected) BorderStroke(1.dp, MaterialTheme.colors.secondary.copy(alpha = 0.3f)) else null,
+    shape = RoundedCornerShape(6.dp),
+    border = if (!selected) BorderStroke(1.dp, MaterialTheme.colors.secondary.copy(alpha = 0.22f)) else null,
     modifier = Modifier.clickable(onClick = onClick)
   ) {
-    Text(label, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp))
+    Text(
+      label,
+      fontSize = 13.sp,
+      fontWeight = if (selected) FontWeight.Medium else FontWeight.Normal,
+      modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+    )
+  }
+}
+
+// Compact toolbar control (Sort / Group / view toggle). Bordered pill so these read as buttons on
+// the black content area instead of bare blue links.
+@Composable
+private fun ToolbarPill(label: String, onClick: () -> Unit, caret: Boolean = true) {
+  Surface(
+    color = MaterialTheme.colors.onSurface.copy(alpha = 0.05f),
+    shape = RoundedCornerShape(10.dp),
+    border = BorderStroke(1.dp, MaterialTheme.colors.secondary.copy(alpha = 0.2f)),
+    modifier = Modifier.clickable(onClick = onClick)
+  ) {
+    Text(
+      label + if (caret) "  ▾" else "",
+      fontSize = 13.sp,
+      color = MaterialTheme.colors.onSurface,
+      modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp)
+    )
   }
 }
 
@@ -464,9 +575,7 @@ private fun FilterChip(label: String, selected: Boolean, onClick: () -> Unit) {
 private fun SortDropdown(current: SortOrder, onSelect: (SortOrder) -> Unit) {
   val expanded = remember { mutableStateOf(false) }
   Box {
-    TextButton(onClick = { expanded.value = true }) {
-      Text("Sort: ${sortLabel(current)}")
-    }
+    ToolbarPill("Sort: ${sortLabel(current)}", onClick = { expanded.value = true })
     DropdownMenu(expanded = expanded.value, onDismissRequest = { expanded.value = false }) {
       SortOrder.entries.forEach { order ->
         DropdownMenuItem(onClick = { onSelect(order); expanded.value = false }) {
@@ -708,28 +817,23 @@ fun revealEntry(e: UnifiedFileEntry) {
 }
 
 // Downloads only what won't leak the user's IP. Files already reachable via trusted relays start
-// downloading; any file whose download would expose the IP to unknown XFTP relays is NOT downloaded
-// and its item is deleted locally (this device only — sender/other devices unaffected), per the
-// user's chosen policy. No approval popup is ever shown. Returns a short summary for feedback.
+// downloading; any file whose download would need an unknown XFTP relay (exposing the user's IP) is
+// simply left untouched — still offered, nothing downloaded, nothing deleted. Skipping already keeps
+// the IP private (the download never happens); the old behaviour also DELETED those items locally,
+// which is surprising, unconfirmed data loss on what the user invoked as a "download" action. No
+// approval popup is shown. Returns a short summary for feedback.
 suspend fun downloadRespectingPrivacy(entries: List<UnifiedFileEntry>): String {
   val ids = entries.mapNotNull { it.fileId }
   if (ids.isEmpty()) return ""
   val rhId = entries.firstOrNull()?.chat?.remoteHostId
   val user = chatModel.currentUser.value ?: return ""
   val notApproved = chatModel.controller.receiveFilesSkippingUnapproved(rhId, user, ids).toHashSet()
-  if (notApproved.isNotEmpty()) {
-    val remove = entries.filter { val fid = it.fileId; fid != null && fid in notApproved }
-    remove.chunked(100).forEach { chunk ->
-      chunk.groupBy { it.chat }.forEach { (chat, es) ->
-        chatModel.controller.apiDeleteChatItems(
-          chat.remoteHostId, chat.chatInfo.chatType, chat.chatInfo.apiId, null,
-          es.map { it.item.id }, CIDeleteMode.cidmInternal
-        )
-      }
-    }
-  }
   val started = ids.size - notApproved.size
-  return "Downloading $started" + if (notApproved.isNotEmpty()) " · removed ${notApproved.size} that would expose your IP" else ""
+  return when {
+    notApproved.isEmpty() -> if (started > 0) "Downloading $started" else ""
+    started > 0 -> "Downloading $started · skipped ${notApproved.size} that would expose your IP"
+    else -> "Skipped ${notApproved.size} that would expose your IP"
+  }
 }
 
 // Pause = cancel the in-flight XFTP receive. SimpleX has no true byte-level resume, so a paused file
@@ -801,9 +905,7 @@ class FileEntryActions(
 private fun GroupDropdown(current: GroupMode, onSelect: (GroupMode) -> Unit) {
   val expanded = remember { mutableStateOf(false) }
   Box {
-    TextButton(onClick = { expanded.value = true }) {
-      Text("Group: " + when (current) { GroupMode.None -> "None"; GroupMode.Chat -> "Chat"; GroupMode.Date -> "Date" })
-    }
+    ToolbarPill("Group: " + when (current) { GroupMode.None -> "None"; GroupMode.Chat -> "Chat"; GroupMode.Date -> "Date" }, onClick = { expanded.value = true })
     DropdownMenu(expanded = expanded.value, onDismissRequest = { expanded.value = false }) {
       GroupMode.entries.forEach { g ->
         DropdownMenuItem(onClick = { onSelect(g); expanded.value = false }) {
@@ -928,192 +1030,6 @@ private fun BatchActionBar(scope: CoroutineScope, entries: List<UnifiedFileEntry
       WithTooltip("Clear selection") {
         IconButton(onClick = onClear) { Icon(painterResource(MR.images.ic_close), contentDescription = "Clear selection") }
       }
-    }
-  }
-}
-
-// --- Storage tab -------------------------------------------------------------------------------
-
-@Composable
-private fun StorageTab(all: List<UnifiedFileEntry>, onReload: (CoroutineScope) -> Unit) {
-  val scope = rememberCoroutineScope()
-  val stats = remember(all) { storageStats(all) }
-  val totalBytes = stats.values.sumOf { it.second }
-  val totalCount = stats.values.sumOf { it.first }
-  val perChat = remember(all) { perChatStorage(all) }
-  val budgetDialogFor = remember { mutableStateOf<Chat?>(null) }
-
-  Column(Modifier.fillMaxSize()) {
-    Column(Modifier.fillMaxWidth().padding(16.dp)) {
-      Text("Local storage used", fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
-      Text("${formatBytes(totalBytes)} across $totalCount downloaded files", fontSize = 13.sp, color = MaterialTheme.colors.secondary)
-      Spacer(Modifier.height(16.dp))
-      FileCategory.entries.forEach { cat ->
-        val (count, bytes) = stats[cat] ?: (0 to 0L)
-        Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-          Icon(categoryIcon(cat), contentDescription = null, tint = MaterialTheme.colors.secondary, modifier = Modifier.size(20.dp))
-          Text(cat.name + "s", modifier = Modifier.padding(start = 10.dp).weight(1f), fontSize = 14.sp)
-          Text("$count · ${formatBytes(bytes)}", fontSize = 13.sp, color = MaterialTheme.colors.secondary)
-        }
-        if (totalBytes > 0) {
-          LinearProgressIndicator(
-            progress = if (totalBytes > 0) bytes.toFloat() / totalBytes.toFloat() else 0f,
-            modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp)
-          )
-        }
-      }
-    }
-    Divider()
-    Text(
-      "Per-chat storage budgets",
-      fontSize = 14.sp, fontWeight = FontWeight.SemiBold,
-      modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)
-    )
-    Text(
-      "Set a limit for noisy chats — oldest local files are removed automatically once a chat goes over budget. This device only.",
-      fontSize = 12.sp, color = MaterialTheme.colors.secondary,
-      modifier = Modifier.padding(horizontal = 16.dp).padding(bottom = 8.dp)
-    )
-    LazyColumn(Modifier.weight(1f)) {
-      items(perChat, key = { it.chat.id }) { info ->
-        Row(
-          Modifier.fillMaxWidth().clickable { budgetDialogFor.value = info.chat }.padding(horizontal = 16.dp, vertical = 8.dp),
-          verticalAlignment = Alignment.CenterVertically
-        ) {
-          Column(Modifier.weight(1f)) {
-            Text(info.chat.chatInfo.displayName, fontSize = 14.sp, maxLines = 1)
-            val budgetText = if (info.budgetBytes != null) "of ${formatBytes(info.budgetBytes)} budget" else "no budget set"
-            Text("${formatBytes(info.totalBytes)} · $budgetText", fontSize = 12.sp, color = MaterialTheme.colors.secondary)
-          }
-          if (info.budgetBytes != null && info.totalBytes > info.budgetBytes) {
-            Text("over budget", fontSize = 11.sp, color = MaterialTheme.colors.error)
-          }
-        }
-        Divider()
-      }
-    }
-    Text(
-      "All figures are computed on-device from your local file index. Nothing here is uploaded, and duplicate detection never leaves this device.",
-      fontSize = 12.sp, color = MaterialTheme.colors.secondary,
-      modifier = Modifier.padding(16.dp)
-    )
-  }
-
-  val target = budgetDialogFor.value
-  if (target != null) {
-    SetBudgetDialog(target, onDismiss = { budgetDialogFor.value = null; onReload(scope) })
-  }
-}
-
-@Composable
-private fun SetBudgetDialog(chat: Chat, onDismiss: () -> Unit) {
-  val scope = rememberCoroutineScope()
-  val current = ChatStorageBudgets.get(chat)
-  val text = remember { mutableStateOf(if (current != null) (current / (1024 * 1024)).toString() else "") }
-  AlertDialog(
-    onDismissRequest = onDismiss,
-    title = { Text("Storage budget — ${chat.chatInfo.displayName}") },
-    text = {
-      Column {
-        Text("Max local storage for this chat, in MB. Oldest local files are auto-removed once exceeded.", fontSize = 13.sp, color = MaterialTheme.colors.secondary)
-        Spacer(Modifier.height(8.dp))
-        OutlinedTextField(value = text.value, onValueChange = { v -> if (v.all { it.isDigit() }) text.value = v }, placeholder = { Text("e.g. 500") }, singleLine = true)
-      }
-    },
-    confirmButton = {
-      TextButton(onClick = {
-        val mb = text.value.toLongOrNull()
-        scope.launch {
-          ChatStorageBudgets.set(chatModel.remoteHostId(), chat, if (mb != null && mb > 0) mb * 1024 * 1024 else null)
-          onDismiss()
-        }
-      }) { Text("Save") }
-    },
-    dismissButton = {
-      Row {
-        if (current != null) {
-          TextButton(onClick = {
-            scope.launch {
-              ChatStorageBudgets.set(chatModel.remoteHostId(), chat, null)
-              onDismiss()
-            }
-          }) { Text("Clear") }
-        }
-        TextButton(onClick = onDismiss) { Text("Cancel") }
-      }
-    }
-  )
-}
-
-// --- Insights tab --------------------------------------------------------------------------------
-
-@Composable
-private fun InsightsTab(all: List<UnifiedFileEntry>) {
-  val local = remember(all) { all.filter { it.isLocal } }
-  // Duplicate detection removed — no hashing pass here (health score uses age/size signals only).
-  val health = remember(local) { storageHealth(all, emptyList()) }
-  val ageDist = remember(local) { ageDistribution(all) }
-  val largest = remember(local) { local.maxByOrNull { it.fileSize } }
-  val totalAgeBytes = ageDist.values.sum().coerceAtLeast(1)
-
-  ColumnWithScrollBar {
-    Column(Modifier.padding(16.dp)) {
-      Text("Storage health", fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
-      Row(Modifier.padding(top = 6.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-        Text(
-          "${health.score} / 100",
-          fontSize = 24.sp, fontWeight = FontWeight.Bold,
-          color = when {
-            health.score >= 80 -> MaterialTheme.colors.primary
-            health.score >= 50 -> Color(0xFFB8860B)
-            else -> MaterialTheme.colors.error
-          }
-        )
-      }
-      health.notes.forEach { (note, good) ->
-        Text(
-          "${if (good) "✓" else "⚠"} $note",
-          fontSize = 13.sp,
-          color = if (good) MaterialTheme.colors.secondary else MaterialTheme.colors.error,
-          modifier = Modifier.padding(vertical = 2.dp)
-        )
-      }
-
-      Spacer(Modifier.height(20.dp))
-      Text("File age distribution", fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
-      Spacer(Modifier.height(8.dp))
-      AgeBucket.entries.forEach { bucket ->
-        val bytes = ageDist[bucket] ?: 0L
-        Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-          Text(bucket.label, modifier = Modifier.weight(1f), fontSize = 13.sp)
-          Text(formatBytes(bytes), fontSize = 13.sp, color = MaterialTheme.colors.secondary)
-        }
-        LinearProgressIndicator(
-          progress = bytes.toFloat() / totalAgeBytes.toFloat(),
-          modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp)
-        )
-      }
-
-      Spacer(Modifier.height(20.dp))
-      Text("Largest local file", fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
-      Spacer(Modifier.height(6.dp))
-      if (largest != null) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-          Icon(categoryIcon(largest.category), contentDescription = null, tint = MaterialTheme.colors.secondary, modifier = Modifier.size(20.dp))
-          Column(Modifier.padding(start = 10.dp)) {
-            Text(largest.fileName, fontSize = 14.sp, maxLines = 1)
-            Text("${formatBytes(largest.fileSize)} · ${largest.chatName}", fontSize = 12.sp, color = MaterialTheme.colors.secondary)
-          }
-        }
-      } else {
-        Text("No local files yet.", fontSize = 13.sp, color = MaterialTheme.colors.secondary)
-      }
-
-      Spacer(Modifier.height(20.dp))
-      Text(
-        "Health score and all figures above are computed on-device from your local file index only — nothing here is uploaded or shared.",
-        fontSize = 12.sp, color = MaterialTheme.colors.secondary
-      )
     }
   }
 }

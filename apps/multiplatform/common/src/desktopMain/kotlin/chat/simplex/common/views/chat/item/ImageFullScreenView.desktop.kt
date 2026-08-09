@@ -8,6 +8,7 @@ import androidx.compose.material.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.graphics.*
 import androidx.compose.ui.input.pointer.*
 import androidx.compose.ui.graphics.ImageBitmap
@@ -23,7 +24,6 @@ import dev.icerock.moko.resources.compose.painterResource
 import dev.icerock.moko.resources.compose.stringResource
 import kotlinx.coroutines.delay
 import org.jetbrains.compose.videoplayer.SkiaBitmapVideoSurface
-import java.io.File
 import kotlin.math.max
 
 @Composable
@@ -68,6 +68,11 @@ actual fun FullScreenVideoView(player: VideoPlayer, modifier: Modifier, close: (
       SurfaceFromPlayer(player, modifier, preview = player.preview.value, onTap = {
         wake()
         togglePlayPause(player)
+      }, onDoubleTapSeek = { forward ->
+        // Double-tap right half = skip forward 10s, left half = skip back 10s (YouTube-style).
+        wake()
+        val delta = if (forward) 10_000L else -10_000L
+        player.seekTo((player.progress.value + delta).coerceIn(0L, player.duration.value))
       })
     }
     AnimatedVisibility(controlsVisible.value, enter = fadeIn(), exit = fadeOut()) {
@@ -82,7 +87,7 @@ actual fun FullScreenVideoView(player: VideoPlayer, modifier: Modifier, close: (
 }
 
 @Composable
-fun BoxScope.SurfaceFromPlayer(player: VideoPlayer, modifier: Modifier, preview: ImageBitmap? = null, onTap: (() -> Unit)? = null) {
+fun BoxScope.SurfaceFromPlayer(player: VideoPlayer, modifier: Modifier, preview: ImageBitmap? = null, onTap: (() -> Unit)? = null, onDoubleTapSeek: ((Boolean) -> Unit)? = null) {
   val surface = remember {
     SkiaBitmapVideoSurface().also {
       player.player.videoSurface().set(it)
@@ -90,8 +95,14 @@ fun BoxScope.SurfaceFromPlayer(player: VideoPlayer, modifier: Modifier, preview:
   }
   val bitmap = surface.bitmap.value
   // detectTapGestures (not clickable) so tapping the frame doesn't grab keyboard focus — the
-  // gallery's arrow-key navigation keeps working after you click the video.
-  val m = if (onTap != null) modifier.pointerInput(onTap) { detectTapGestures(onTap = { onTap() }) } else modifier
+  // gallery's arrow-key navigation keeps working after you click the video. onDoubleTapSeek(true)
+  // when the double-tap lands on the right half of the surface, (false) on the left half.
+  val m = if (onTap != null || onDoubleTapSeek != null) modifier.pointerInput(onTap, onDoubleTapSeek) {
+    detectTapGestures(
+      onDoubleTap = if (onDoubleTapSeek != null) { offset -> onDoubleTapSeek(offset.x >= size.width / 2f) } else null,
+      onTap = if (onTap != null) { { onTap() } } else null
+    )
+  } else modifier
   when {
     bitmap != null -> Image(
       bitmap,
@@ -120,7 +131,9 @@ private fun togglePlayPause(player: VideoPlayer) {
   val ended = player.progress.value >= player.duration.value && player.duration.value > 0
   when {
     ended -> { player.progress.value = 0; player.play(true) }
-    player.videoPlaying.value -> player.player.pause()
+    // Route pause through the interface (dispatches to the player thread) — never poke raw VLCJ from
+    // the Compose thread.
+    player.videoPlaying.value -> player.pause()
     else -> player.play(true)
   }
 }
@@ -132,16 +145,6 @@ private fun formatTime(ms: Long): String {
   val m = total / 60
   val s = total % 60
   return "%d:%02d".format(m, s)
-}
-
-private fun saveFrame(player: VideoPlayer) {
-  runCatching {
-    val home = System.getProperty("user.home")
-    val dir = File(home, "Pictures").let { if (it.isDirectory) it else File(home) }
-    val out = File(dir, "simplex_frame_${System.currentTimeMillis()}.png")
-    if (player.player.snapshots().save(out)) showToast("Saved frame: ${out.absolutePath}")
-    else showToast("Could not save frame")
-  }.onFailure { showToast("Could not save frame") }
 }
 
 private fun toggleWindowFullscreen() {
@@ -192,7 +195,9 @@ private fun Controls(player: VideoPlayer, modifier: Modifier, onInteract: () -> 
           player.seekTo(target)
           scrubbing.value = false
         },
-        modifier = Modifier.weight(1f).padding(horizontal = 8.dp)
+        // Non-focusable: clicking/dragging the bar must NOT hand keyboard focus to the Slider,
+        // otherwise Left/Right would adjust the slider (seek) instead of navigating the gallery.
+        modifier = Modifier.weight(1f).padding(horizontal = 8.dp).focusProperties { canFocus = false }
       )
       // Click to toggle total <-> remaining time.
       val rightMs = if (showRemaining.value) -(duration.value - shownMs).coerceAtLeast(0) else duration.value
@@ -213,7 +218,7 @@ private fun Controls(player: VideoPlayer, modifier: Modifier, onInteract: () -> 
       Slider(
         value = if (muted.value) 0f else volume.value / 100f,
         onValueChange = { onInteract(); player.setVolume((it * 100).toInt()) },
-        modifier = Modifier.width(90.dp)
+        modifier = Modifier.width(90.dp).focusProperties { canFocus = false }
       )
       Spacer(Modifier.weight(1f))
       IconButton(onClick = { seekBy(-10_000) }) {
@@ -232,7 +237,7 @@ private fun Controls(player: VideoPlayer, modifier: Modifier, onInteract: () -> 
         Icon(painterResource(MR.images.ic_forward), "Forward 10s", Modifier.size(26.dp), tint = Color.White)
       }
       Spacer(Modifier.weight(1f))
-      // Right: loop, speed, screenshot, fullscreen.
+      // Right: loop, speed, fullscreen.
       IconButton(onClick = { onInteract(); loop.value = !loop.value }) {
         Icon(
           painterResource(MR.images.ic_repeat_one), "Loop", Modifier.size(24.dp),
@@ -242,12 +247,10 @@ private fun Controls(player: VideoPlayer, modifier: Modifier, onInteract: () -> 
       TextButton(onClick = {
         onInteract()
         speedIdx.value = (speedIdx.value + 1) % speedSteps.size
-        player.player.setRate(speedSteps[speedIdx.value])
+        // Thread-safe rate change (dispatched to the player thread) instead of touching raw VLCJ here.
+        player.setRate(speedSteps[speedIdx.value])
       }) {
         Text("${speedSteps[speedIdx.value]}×", color = Color.White, fontSize = 14.sp)
-      }
-      IconButton(onClick = { onInteract(); saveFrame(player) }) {
-        Icon(painterResource(MR.images.ic_photo_camera), "Save frame", Modifier.size(22.dp), tint = Color.White)
       }
       IconButton(onClick = { onInteract(); toggleWindowFullscreen() }) {
         Icon(painterResource(MR.images.ic_expand_all), "Fullscreen", Modifier.size(22.dp), tint = Color.White)

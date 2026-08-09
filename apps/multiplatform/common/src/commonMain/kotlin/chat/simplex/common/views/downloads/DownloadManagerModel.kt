@@ -2,19 +2,12 @@ package chat.simplex.common.views.downloads
 
 import chat.simplex.common.model.*
 import chat.simplex.common.platform.*
-import java.io.File
-import java.security.MessageDigest
 
 // Everything in this file is local-device-only: no network call, no sync, no telemetry.
 // Favorites/collections and per-chat storage budgets all persist inside chat.db
 // (local_file_favorites/local_file_collections/local_chat_storage_budgets tables) — same
 // on-device SQLCipher tier as the rest of the app's data, never bundled into any export/share/
 // backup path, never touched by SMP/XFTP protocol code.
-//
-// sha256OfLocalFile below is a separate, transient, in-memory hash used only to group the
-// Duplicates tab on demand -- it's never written to disk, so it doesn't carry the same
-// at-rest-fingerprinting concern that the persisted files.file_hash column does (that one is
-// HMAC-keyed server-side for exactly that reason, see Simplex.Chat.Util.hashFile).
 
 enum class FileCategory { Image, Video, Voice, File }
 
@@ -46,7 +39,11 @@ enum class SortOrder { Newest, Oldest, Largest, Smallest }
 data class UnifiedFileEntry(
   val item: ChatItem,
   val chat: Chat,
-  val category: FileCategory
+  val category: FileCategory,
+  // When a file has several copies (sent/received/forwarded/resent), dedup keeps one openable copy
+  // but stamps it with the NEWEST timestamp among all copies so re-sharing an already-downloaded
+  // file floats it back to the top of "Newest". Null = just use this item's own timestamp.
+  val sortTsOverride: kotlinx.datetime.Instant? = null
 ) {
   val fileId: Long? get() = item.file?.fileId
   val fileName: String get() = item.file?.fileName ?: item.text
@@ -71,6 +68,8 @@ data class UnifiedFileEntry(
   val senderName: String get() = if (item.chatDir.sent) "me" else chat.chatInfo.displayName
   val chatName: String get() = chat.chatInfo.displayName
   val createdAt get() = item.meta.itemTs
+  // Timestamp used for sorting: the newest across all duplicate copies when set (see dedup), else own.
+  val sortTs: kotlinx.datetime.Instant get() = sortTsOverride ?: createdAt
 
   // Identity of the underlying file, independent of which message/chat carries it. The same file
   // sent, received, forwarded, or shared into a note folder produces different ChatItems (and
@@ -94,32 +93,16 @@ data class UnifiedFileEntry(
 fun List<UnifiedFileEntry>.dedupByContent(): List<UnifiedFileEntry> =
   groupBy { it.dedupKey() }
     .map { (_, group) ->
-      group.sortedWith(
+      val best = group.sortedWith(
         compareByDescending<UnifiedFileEntry> { it.isLocal }
           .thenByDescending { it.isDownloading }
           .thenByDescending { it.createdAt }
       ).first()
+      // Keep the best openable copy, but sort it by the newest timestamp across all copies — so
+      // forwarding/resending an already-downloaded file bumps it to the top of "Newest".
+      val newestTs = group.maxOf { it.createdAt }
+      if (newestTs > best.createdAt) best.copy(sortTsOverride = newestTs) else best
     }
-
-// Computes SHA-256 of the decrypted on-disk bytes. Only ever called for files already local
-// (isLocal == true) — never triggers a download, never touches the network.
-fun sha256OfLocalFile(path: String): String? {
-  return try {
-    val digest = MessageDigest.getInstance("SHA-256")
-    File(path).inputStream().use { input ->
-      val buf = ByteArray(64 * 1024)
-      while (true) {
-        val n = input.read(buf)
-        if (n < 0) break
-        digest.update(buf, 0, n)
-      }
-    }
-    digest.digest().joinToString("") { "%02x".format(it) }
-  } catch (e: Throwable) {
-    Log.e(TAG, "sha256OfLocalFile error: $e")
-    null
-  }
-}
 
 // Favorites/collections live inside chat.db (local_file_favorites / local_file_collections(_members),
 // added by migration M20260701_download_manager) — same SQLCipher encryption tier as every other
@@ -223,23 +206,10 @@ fun List<UnifiedFileEntry>.applyFilters(
 }
 
 fun List<UnifiedFileEntry>.sortedBy(order: SortOrder): List<UnifiedFileEntry> = when (order) {
-  SortOrder.Newest -> sortedByDescending { it.createdAt }
-  SortOrder.Oldest -> sortedBy { it.createdAt }
+  SortOrder.Newest -> sortedByDescending { it.sortTs }
+  SortOrder.Oldest -> sortedBy { it.sortTs }
   SortOrder.Largest -> sortedByDescending { it.fileSize }
   SortOrder.Smallest -> sortedBy { it.fileSize }
-}
-
-// Groups already-local files by content hash. Hashing runs only over files that are already
-// downloaded (isLocal) — never triggers new downloads. Safe to call off the main thread.
-fun findDuplicates(entries: List<UnifiedFileEntry>): List<DuplicateGroup> {
-  val byHash = HashMap<String, MutableList<UnifiedFileEntry>>()
-  for (e in entries) {
-    if (!e.isLocal) continue
-    val path = getLoadedFilePath(e.item.file) ?: continue
-    val hash = sha256OfLocalFile(path) ?: continue
-    byHash.getOrPut(hash) { mutableListOf() }.add(e)
-  }
-  return byHash.filter { it.value.size > 1 }.map { (hash, list) -> DuplicateGroup(hash, list) }
 }
 
 fun storageStats(entries: List<UnifiedFileEntry>): Map<FileCategory, Pair<Int, Long>> {
@@ -342,9 +312,14 @@ fun perChatStorage(entries: List<UnifiedFileEntry>): List<ChatStorageInfo> {
     .sortedByDescending { it.totalBytes }
 }
 
-// For every chat over its budget, deletes the local copy of the oldest files first (leaving the
-// most recent ones) until the chat is back under budget. Local-only delete, never touches the
-// network. Safe to call after every reload — a chat already under budget is a no-op.
+// For every chat over its budget, deletes the local copy of the oldest files first (leaving the most
+// recent ones) until the chat is back under budget. Local-only delete, never touches the network.
+//
+// DANGER: this permanently removes local items with NO confirmation. Invoke it only from an explicit,
+// user-initiated + confirmed action — never automatically on reload/open (that silently deletes the
+// oldest media every time the screen is viewed). It is intentionally not called anywhere right now.
+// Also pass the FULL per-file list, not a content-deduped one: dedup keeps the single downloaded copy,
+// so enforcing over a deduped list would delete exactly the copy the user can open.
 suspend fun enforceStorageBudgets(entries: List<UnifiedFileEntry>) {
   val byChat = entries.filter { it.isLocal }.groupBy { it.chat }
   for ((chat, files) in byChat) {

@@ -1473,6 +1473,12 @@ fun BoxScope.ChatInfoToolbar(
               color = if (isSelected) MaterialTheme.colors.primary else Color.Unspecified,
               onClick = {
                 showContentFilterMenu.value = false
+                // Links get the rich, deduped, privacy-aware browser instead of the inline filter.
+                if (filter == ContentFilter.Links) {
+                  val rhId = chatModel.remoteHostId()
+                  ModalManager.fullscreen.showCustomModal { close -> LinksBrowserView(rhId, chatInfo, close) }
+                  return@ItemAction
+                }
                 if (contentFilter.value == filter) return@ItemAction
                 contentFilter.value = filter
                 showSearch.value = true
@@ -1937,7 +1943,12 @@ fun BoxScope.ChatItemsList(
       LocalViewConfiguration provides LocalViewConfiguration.current.bigTouchSlop()
     ) {
       val provider = { downloadedOnly: Boolean ->
-        providerForGallery(reversedChatItems.value.asReversed(), cItem.id, downloadedOnly) { indexInReversed ->
+        providerForGallery(
+          reversedChatItems.value.asReversed(), cItem.id, downloadedOnly,
+          // Delete key in the fullscreen viewer: remove this message + its local file from this
+          // device (cidmInternal), same as the message "Delete for me" action.
+          deleteMedia = { ci -> deleteMessages(remoteHostId, chatInfo, listOf(ci.id), forAll = false, moderate = false) }
+        ) { indexInReversed ->
           itemScope.launch {
             listState.value.scrollToItem(
               min(reversedChatItems.value.lastIndex, indexInReversed + 1),
@@ -3581,6 +3592,7 @@ fun providerForGallery(
   chatItems: List<ChatItem>,
   cItemId: Long,
   downloadedOnly: Boolean = false,
+  deleteMedia: (suspend (ChatItem) -> Unit)? = null,
   scrollTo: (Int) -> Unit
 ): ImageGalleryProvider {
   // Decode the small base64 preview embedded in every image/video message into a displayable
@@ -3679,6 +3691,14 @@ fun providerForGallery(
       // Do not scroll to active item, just to different items
       if (item.second.id == cItemId) return
       scrollTo(indexInReversed)
+    }
+
+    override suspend fun deleteMediaAt(index: Int): Boolean {
+      val del = deleteMedia ?: return false
+      val internalIndex = initialIndex - index
+      val item = item(internalIndex, initialChatId)?.second ?: return false
+      del(item)
+      return true
     }
   }
 }

@@ -71,9 +71,9 @@ actual class VideoPlayer actual constructor(
         // Local files are fully on disk — a big demux/file cache only adds start-up latency. A small
         // cache + skipping audio time-stretch setup gets the first frame on screen noticeably faster.
         player.media().prepare(uri.toFile().absolutePath, ":file-caching=200", ":no-audio-time-stretch")
-        if (seek != null) {
-          player.seekTo(seek.toInt())
-        }
+        // Do NOT seek here: the media is prepared but not yet playing, and seeking pre-play is
+        // unreliable in VLCJ. The single authoritative seek happens right after player.start() below
+        // (this path used to seek in both places — a redundant double-seek on first play).
       }.onFailure {
         Log.e(TAG, it.stackTraceToString())
         AlertManager.shared.showAlertMsg(generalGetString(MR.strings.unknown_error), it.stackTraceToString())
@@ -90,8 +90,11 @@ actual class VideoPlayer actual constructor(
       return false
     }
     listener.value = onProgressUpdate
-    // Player can only be accessed in one specific thread
-    progressJob = CoroutineScope(Dispatchers.Main).launch {
+    // Player can only be accessed in one specific thread ([playerThread]). Poll on it — NOT on the main
+    // thread — so reads of currentPosition/isPlaying/duration serialize with start/stop/release (all on
+    // playerThread too) instead of racing native VLCJ state across threads. isReleased is checked before
+    // every native read, and release() runs on the same single thread, so no access-after-release.
+    progressJob = CoroutineScope(playerThread.asCoroutineDispatcher()).launch {
       onProgressUpdate(player.currentPosition.toLong(), TrackState.PLAYING)
       while (isActive && !isReleased.get() && player.isPlaying) {
         // Even when current position is equal to duration, the player has isPlaying == true for some time,
@@ -188,6 +191,13 @@ actual class VideoPlayer actual constructor(
     playerThread.execute { runCatching { player.audio().setVolume(vol); player.audio().isMute = vol == 0 } }
   }
 
+  // Playback speed (e.g. 0.5x..2x). Routed through [playerThread] like every other control so it never
+  // touches native VLCJ state from the Compose/UI thread.
+  fun setRate(rate: Float) {
+    if (isReleased.get()) return
+    playerThread.execute { runCatching { player.setRate(rate) } }
+  }
+
   override fun enableSound(enable: Boolean): Boolean {
     // Impossible to change volume for only one player. It changes for every player
     // https://github.com/caprica/vlcj/issues/985
@@ -250,43 +260,51 @@ actual class VideoPlayer actual constructor(
     }
 
     suspend fun getBitmapFromVideo(defaultPreview: ImageBitmap?, uri: URI?, withAlertOnException: Boolean = true): VideoPlayerInterface.PreviewAndDuration = withContext(previewThread.asCoroutineDispatcher()) {
-      val mediaComponent = getOrCreateHelperPlayer()
-      val player = mediaComponent.mediaPlayer()
+      // Check the file before taking a helper player from the pool, so the null/missing path can't
+      // leak one.
       if (uri == null || !uri.toFile().exists()) {
         if (withAlertOnException) showVideoDecodingException()
-
         return@withContext VideoPlayerInterface.PreviewAndDuration(preview = defaultPreview, timestamp = 0L, duration = 0L)
       }
-      val surface = SkiaBitmapVideoSurface()
-      player.videoSurface().set(surface)
-      player.media().startPaused(uri.toFile().absolutePath)
-      val snap = withTimeoutOrNull(1500L) {
-        while (surface.bitmap.value == null) delay(50)
-        surface.bitmap.value!!.toAwtImage()
-      }
-      val orientation = player.media().info().videoTracks().firstOrNull()?.orientation()
-      if (orientation == null) {
-        player.stop()
-        putHelperPlayer(mediaComponent)
+      val mediaComponent = getOrCreateHelperPlayer()
+      val player = mediaComponent.mediaPlayer()
+      // try/finally so the helper player is ALWAYS stopped and returned to the pool — on success, on a
+      // missing-orientation/timeout, or on any decode exception. Without it, a throw (or the early
+      // returns) leaked a VLCJ player out of the pool for the rest of the session.
+      try {
+        val surface = SkiaBitmapVideoSurface()
+        player.videoSurface().set(surface)
+        player.media().startPaused(uri.toFile().absolutePath)
+        val snap = withTimeoutOrNull(1500L) {
+          while (surface.bitmap.value == null) delay(50)
+          surface.bitmap.value!!.toAwtImage()
+        }
+        val orientation = player.media().info().videoTracks().firstOrNull()?.orientation()
+        if (orientation == null) {
+          if (withAlertOnException) showVideoDecodingException()
+          return@withContext VideoPlayerInterface.PreviewAndDuration(preview = defaultPreview, timestamp = 0L, duration = 0L)
+        }
+        val preview: ImageBitmap? = when (orientation) {
+          VideoOrientation.TOP_LEFT -> snap
+          VideoOrientation.TOP_RIGHT -> snap?.flip(false, true)
+          VideoOrientation.BOTTOM_LEFT -> snap?.flip(true, false)
+          VideoOrientation.BOTTOM_RIGHT -> snap?.rotate(180.0)
+          VideoOrientation.LEFT_TOP -> snap  /* Transposed */
+          VideoOrientation.LEFT_BOTTOM -> snap?.rotate(-90.0)
+          VideoOrientation.RIGHT_TOP -> snap?.rotate(90.0)
+          VideoOrientation.RIGHT_BOTTOM -> snap /* Anti-transposed */
+          else -> snap
+        }?.toComposeImageBitmap()
+        val duration = player.duration.toLong()
+        return@withContext VideoPlayerInterface.PreviewAndDuration(preview = preview, timestamp = 0L, duration = duration)
+      } catch (e: Throwable) {
+        Log.e(TAG, "getBitmapFromVideo failed: ${e.stackTraceToString()}")
         if (withAlertOnException) showVideoDecodingException()
-
         return@withContext VideoPlayerInterface.PreviewAndDuration(preview = defaultPreview, timestamp = 0L, duration = 0L)
+      } finally {
+        runCatching { player.stop() }
+        putHelperPlayer(mediaComponent)
       }
-      val preview: ImageBitmap? = when (orientation) {
-        VideoOrientation.TOP_LEFT -> snap
-        VideoOrientation.TOP_RIGHT -> snap?.flip(false, true)
-        VideoOrientation.BOTTOM_LEFT -> snap?.flip(true, false)
-        VideoOrientation.BOTTOM_RIGHT -> snap?.rotate(180.0)
-        VideoOrientation.LEFT_TOP -> snap  /* Transposed */
-        VideoOrientation.LEFT_BOTTOM -> snap?.rotate(-90.0)
-        VideoOrientation.RIGHT_TOP -> snap?.rotate(90.0)
-        VideoOrientation.RIGHT_BOTTOM -> snap /* Anti-transposed */
-        else -> snap
-      }?.toComposeImageBitmap()
-      val duration = player.duration.toLong()
-      player.stop()
-      putHelperPlayer(mediaComponent)
-      return@withContext VideoPlayerInterface.PreviewAndDuration(preview = preview, timestamp = 0L, duration = duration)
     }
 
     val playerThread = Executors.newSingleThreadExecutor()

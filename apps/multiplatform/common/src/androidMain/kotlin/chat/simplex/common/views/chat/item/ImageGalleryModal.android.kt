@@ -4,5 +4,6 @@ import androidx.compose.runtime.Composable
 
 @Composable
 actual fun openGalleryModal(imageProvider: (Boolean) -> ImageGalleryProvider, close: () -> Unit) {
-  ImageFullScreenView({ imageProvider(false) }, close)
+  // downloadedOnly = true: navigation + autoplay only visit downloaded media (no stuck previews).
+  ImageFullScreenView({ imageProvider(true) }, close)
 }
