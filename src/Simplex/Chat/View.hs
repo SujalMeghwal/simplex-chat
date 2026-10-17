@@ -469,7 +469,8 @@ chatEventToView hu ChatConfig {logLevel, showReactions, showReceipts, testView} 
   CEvtReceivedContactRequest u UserContactRequest {localDisplayName = c, profile} _chat -> ttyUser u $ viewReceivedContactRequest c (fromLocalProfile profile)
   CEvtRcvFileStart u ci -> ttyUser u $ receivingFile_' hu testView "started" ci
   CEvtRcvFileComplete u ci -> ttyUser u $ receivingFile_' hu testView "completed" ci
-  CEvtRcvFileDuplicate u ci dupName -> ttyUser u $ receivingFile_' hu testView ("completed (duplicate of " <> T.unpack dupName <> ")") ci
+  -- fork: the desktop app shows its own notice from the JSON event; no terminal line, so CLI output stays as upstream
+  CEvtRcvFileDuplicate {} -> []
   CEvtRcvStandaloneFileComplete u _ ft -> ttyUser u $ receivingFileStandalone "completed" ft
   CEvtRcvFileSndCancelled u _ ft -> ttyUser u $ viewRcvFileSndCancelled ft
   CEvtRcvFileError u (Just ci) e _ -> ttyUser u $ receivingFile_' hu testView "error" ci <> [sShow e]
