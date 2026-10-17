@@ -490,8 +490,9 @@ private suspend fun classifySimplex(rhId: Long?, uri: String): SxResult {
   // user-facing alert on error responses, which would spam alerts during bulk background
   // classification. log = false so link URIs are never written to the debug log. This runs
   // over the app's normal SimpleX transport (SOCKS/Tor when enabled) — no extra exposure.
+  // PRMNever: bulk background classification must not trigger a name lookup per link.
   val userId = chatModel.currentUser.value?.userId ?: return SxResult(LinkStatus.Dead, null)
-  val r = runCatching { chatModel.controller.sendCmd(rhId, CC.APIConnectPlan(userId, uri, null), log = false) }.getOrNull()
+  val r = runCatching { chatModel.controller.sendCmd(rhId, CC.APIConnectPlan(userId, uri, PlanResolveMode.PRMNever), log = false) }.getOrNull()
   val plan = if (r is API.Result && r.res is CR.CRConnectionPlan) (r.res as CR.CRConnectionPlan).connectionPlan
     else return SxResult(LinkStatus.Dead, null)
   return when (plan) {

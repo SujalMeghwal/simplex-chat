@@ -306,7 +306,7 @@ object ChatStorageBudgets {
   }
 
   suspend fun load(rhId: Long?) {
-    chatModel.controller.apiGetChatStorageBudgets(rhId)?.let { setCache(it) }
+    chatModel.controller.apiGetChatStorageBudgets(rhId)?.let { cache = it }
   }
 
   fun get(chat: Chat): Long? {
@@ -320,7 +320,7 @@ object ChatStorageBudgets {
     } else {
       chatModel.controller.apiSetChatStorageBudget(rhId, chat.chatInfo.chatType, chat.chatInfo.apiId, budgetBytes)
     }
-    updated?.let { setCache(it) }
+    updated?.let { cache = it }
   }
 }
 
