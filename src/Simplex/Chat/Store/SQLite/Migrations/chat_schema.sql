@@ -846,6 +846,41 @@ CREATE TABLE rcv_roster_transfers(
   created_at TEXT NOT NULL DEFAULT(datetime('now')),
   updated_at TEXT NOT NULL DEFAULT(datetime('now'))
 ) STRICT;
+CREATE TABLE local_file_collections(
+  collection_id INTEGER PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,
+  collection_name TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT(datetime('now'))
+) STRICT;
+CREATE TABLE local_file_collection_members(
+  collection_id INTEGER NOT NULL REFERENCES local_file_collections ON DELETE CASCADE,
+  file_id INTEGER NOT NULL REFERENCES files ON DELETE CASCADE,
+  added_at TEXT NOT NULL DEFAULT(datetime('now')),
+  PRIMARY KEY(collection_id, file_id)
+) WITHOUT ROWID, STRICT;
+CREATE TABLE local_file_favorites(
+  file_id INTEGER PRIMARY KEY REFERENCES files ON DELETE CASCADE,
+  favorited_at TEXT NOT NULL DEFAULT(datetime('now'))
+) STRICT;
+CREATE TABLE local_download_stats(
+  stat_date TEXT NOT NULL, -- yyyy-mm-dd, device-local calendar day
+  user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,
+  files_downloaded INTEGER NOT NULL DEFAULT 0,
+  bytes_downloaded INTEGER NOT NULL DEFAULT 0,
+  bytes_deduped INTEGER NOT NULL DEFAULT 0, -- storage reclaimed by dedup cleanup that day
+  PRIMARY KEY(stat_date, user_id)
+) WITHOUT ROWID, STRICT;
+CREATE TABLE local_hash_key(
+  user_id INTEGER PRIMARY KEY REFERENCES users ON DELETE CASCADE,
+  hash_key BLOB NOT NULL
+) STRICT;
+CREATE TABLE local_chat_storage_budgets(
+  contact_id INTEGER REFERENCES contacts ON DELETE CASCADE,
+  group_id INTEGER REFERENCES groups ON DELETE CASCADE,
+  note_folder_id INTEGER REFERENCES note_folders ON DELETE CASCADE,
+  user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,
+  budget_bytes INTEGER NOT NULL
+) STRICT;
 CREATE INDEX contact_profiles_index ON contact_profiles(
   display_name,
   full_name
@@ -1377,44 +1412,9 @@ CREATE INDEX idx_files_group_id_shared_msg_id ON files(
   shared_msg_id
 );
 CREATE INDEX idx_files_roster_transfer_id ON files(roster_transfer_id);
-CREATE INDEX idx_files_file_hash ON files (user_id, file_hash);
-CREATE INDEX idx_files_file_name ON files (user_id, file_name);
-CREATE TABLE local_file_collections (
-  collection_id INTEGER PRIMARY KEY,
-  user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,
-  collection_name TEXT NOT NULL,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
-) STRICT;
-CREATE TABLE local_file_collection_members (
-  collection_id INTEGER NOT NULL REFERENCES local_file_collections ON DELETE CASCADE,
-  file_id INTEGER NOT NULL REFERENCES files ON DELETE CASCADE,
-  added_at TEXT NOT NULL DEFAULT (datetime('now')),
-  PRIMARY KEY (collection_id, file_id)
-) WITHOUT ROWID, STRICT;
-CREATE TABLE local_file_favorites (
-  file_id INTEGER PRIMARY KEY REFERENCES files ON DELETE CASCADE,
-  favorited_at TEXT NOT NULL DEFAULT (datetime('now'))
-) STRICT;
-CREATE TABLE local_download_stats (
-  stat_date TEXT NOT NULL,
-  user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,
-  files_downloaded INTEGER NOT NULL DEFAULT 0,
-  bytes_downloaded INTEGER NOT NULL DEFAULT 0,
-  bytes_deduped INTEGER NOT NULL DEFAULT 0,
-  PRIMARY KEY (stat_date, user_id)
-) WITHOUT ROWID, STRICT;
-CREATE TABLE local_hash_key (
-  user_id INTEGER PRIMARY KEY REFERENCES users ON DELETE CASCADE,
-  hash_key BLOB NOT NULL
-) STRICT;
-CREATE TABLE local_chat_storage_budgets (
-  contact_id INTEGER REFERENCES contacts ON DELETE CASCADE,
-  group_id INTEGER REFERENCES groups ON DELETE CASCADE,
-  note_folder_id INTEGER REFERENCES note_folders ON DELETE CASCADE,
-  user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,
-  budget_bytes INTEGER NOT NULL
-) STRICT;
-CREATE UNIQUE INDEX idx_local_chat_storage_budgets_chat ON local_chat_storage_budgets (
+CREATE INDEX idx_files_file_hash ON files(user_id, file_hash);
+CREATE INDEX idx_files_file_name ON files(user_id, file_name);
+CREATE UNIQUE INDEX idx_local_chat_storage_budgets_chat ON local_chat_storage_budgets(
   user_id,
   IFNULL(contact_id, -1),
   IFNULL(group_id, -1),
@@ -1422,6 +1422,25 @@ CREATE UNIQUE INDEX idx_local_chat_storage_budgets_chat ON local_chat_storage_bu
 );
 CREATE INDEX idx_chat_items_item_signed_by_group_member_id ON chat_items(
   item_signed_by_group_member_id
+);
+CREATE INDEX idx_local_file_collections_user_id ON local_file_collections(
+  user_id
+);
+CREATE INDEX idx_local_file_collection_members_collection_id ON local_file_collection_members(
+  collection_id
+);
+CREATE INDEX idx_local_file_collection_members_file_id ON local_file_collection_members(
+  file_id
+);
+CREATE INDEX idx_local_download_stats_user_id ON local_download_stats(user_id);
+CREATE INDEX idx_local_chat_storage_budgets_contact_id ON local_chat_storage_budgets(
+  contact_id
+);
+CREATE INDEX idx_local_chat_storage_budgets_group_id ON local_chat_storage_budgets(
+  group_id
+);
+CREATE INDEX idx_local_chat_storage_budgets_note_folder_id ON local_chat_storage_budgets(
+  note_folder_id
 );
 CREATE TRIGGER on_group_members_insert_update_summary
 AFTER INSERT ON group_members
