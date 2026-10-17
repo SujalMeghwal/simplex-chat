@@ -892,12 +892,13 @@ getUserChatTags db User {userId} =
 -- favorites/collections are always filtered/joined through files.user_id to keep them scoped to
 -- the active profile when a database is shared by multiple users.
 
-toggleFileFavorite :: DB.Connection -> Int64 -> IO ()
-toggleFileFavorite db fId = do
+-- Only files of this user can be favorited/collected: requests for another profile's file do nothing.
+toggleFileFavorite :: DB.Connection -> User -> Int64 -> IO ()
+toggleFileFavorite db User {userId} fId = do
   rows <- DB.query db "SELECT 1 FROM local_file_favorites WHERE file_id = ?" (Only fId) :: IO [Only Int]
   if null rows
-    then DB.execute db "INSERT INTO local_file_favorites (file_id) VALUES (?)" (Only fId)
-    else DB.execute db "DELETE FROM local_file_favorites WHERE file_id = ?" (Only fId)
+    then DB.execute db "INSERT INTO local_file_favorites (file_id) SELECT file_id FROM files WHERE file_id = ? AND user_id = ?" (fId, userId)
+    else DB.execute db "DELETE FROM local_file_favorites WHERE file_id = ? AND file_id IN (SELECT file_id FROM files WHERE user_id = ?)" (fId, userId)
 
 getFavoriteFileIds :: DB.Connection -> User -> IO [Int64]
 getFavoriteFileIds db User {userId} =
@@ -928,9 +929,12 @@ deleteFileCollection db User {userId} name =
   DB.execute db "DELETE FROM local_file_collections WHERE user_id = ? AND collection_name = ?" (userId, name)
 
 addFileToCollection :: DB.Connection -> User -> Text -> Int64 -> IO ()
-addFileToCollection db user name fId = do
+addFileToCollection db user@User {userId} name fId = do
   cId <- getOrCreateFileCollection db user name
-  DB.execute db "INSERT OR IGNORE INTO local_file_collection_members (collection_id, file_id) VALUES (?,?)" (cId, fId)
+  DB.execute
+    db
+    "INSERT OR IGNORE INTO local_file_collection_members (collection_id, file_id) SELECT ?, file_id FROM files WHERE file_id = ? AND user_id = ?"
+    (cId, fId, userId)
 
 removeFileFromCollection :: DB.Connection -> User -> Text -> Int64 -> IO ()
 removeFileFromCollection db User {userId} name fId =
@@ -956,7 +960,13 @@ getFileVault db user@User {userId} = do
   fileCollections <- forM cols $ \(cId, collectionName) -> do
     fileIds <- map fromOnly <$> DB.query db "SELECT file_id FROM local_file_collection_members WHERE collection_id = ?" (Only cId)
     pure FileCollectionEntry {collectionName, fileIds}
-  pure FileVault {favoriteFileIds, fileCollections}
+  verifiedFileIds <-
+    map fromOnly
+      <$> DB.query
+        db
+        "SELECT file_id FROM files WHERE user_id = ? AND file_digest IS NOT NULL AND ci_file_status = 'rcv_complete'"
+        (Only userId)
+  pure FileVault {favoriteFileIds, fileCollections, verifiedFileIds}
 
 -- Local-device-only per-chat storage budget. Delete-then-insert instead of upsert to stay
 -- portable across the SQLite/Postgres backends this module compiles for (avoids relying on an

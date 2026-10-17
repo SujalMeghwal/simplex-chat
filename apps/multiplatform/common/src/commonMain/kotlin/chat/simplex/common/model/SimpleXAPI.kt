@@ -107,7 +107,8 @@ class AppPreferences {
     if (!runServiceInBackground.get()) NotificationsMode.OFF else NotificationsMode.default
   )  { NotificationsMode.values().firstOrNull { it.name == this } }
   val closeBehavior: SharedPreference<CloseBehavior> = mkSafeEnumPreference(SHARED_PREFS_DESKTOP_CLOSE_BEHAVIOR, CloseBehavior.default)
-  val notificationPreviewMode = mkStrPreference(SHARED_PREFS_NOTIFICATION_PREVIEW_MODE, NotificationPreviewMode.default.name)
+  // Desktop: hidden by default — the system notification daemon receives (and may keep) the preview text
+  val notificationPreviewMode = mkStrPreference(SHARED_PREFS_NOTIFICATION_PREVIEW_MODE, (if (appPlatform.isDesktop) NotificationPreviewMode.HIDDEN else NotificationPreviewMode.default).name)
   val canAskToEnableNotifications = mkBoolPreference(SHARED_PREFS_CAN_ASK_TO_ENABLE_NOTIFICATIONS, true)
   val backgroundServiceNoticeShown = mkBoolPreference(SHARED_PREFS_SERVICE_NOTICE_SHOWN, false)
   val backgroundServiceBatteryNoticeShown = mkBoolPreference(SHARED_PREFS_SERVICE_BATTERY_NOTICE_SHOWN, false)
@@ -152,6 +153,8 @@ class AppPreferences {
   val chatArchiveTime = mkDatePreference(SHARED_PREFS_CHAT_ARCHIVE_TIME, null)
   val autoBackupEnabled = mkBoolPreference(SHARED_PREFS_AUTO_BACKUP_ENABLED, false)
   val autoBackupFolder = mkStrPreference(SHARED_PREFS_AUTO_BACKUP_FOLDER, null)
+  // Set when the unattended backup on app close fails (no UI is available then), shown on next launch
+  val autoBackupFailed = mkBoolPreference(SHARED_PREFS_AUTO_BACKUP_FAILED, false)
   val autoDeleteOldUndownloadedMedia = mkBoolPreference(SHARED_PREFS_AUTO_DELETE_OLD_UNDOWNLOADED_MEDIA, false)
   val chatLastStart = mkDatePreference(SHARED_PREFS_CHAT_LAST_START, null)
   val chatStopped = mkBoolPreference(SHARED_PREFS_CHAT_STOPPED, false)
@@ -440,6 +443,7 @@ class AppPreferences {
     private const val SHARED_PREFS_CHAT_ARCHIVE_TIME = "ChatArchiveTime"
     private const val SHARED_PREFS_AUTO_BACKUP_ENABLED = "AutoBackupEnabled"
     private const val SHARED_PREFS_AUTO_BACKUP_FOLDER = "AutoBackupFolder"
+    private const val SHARED_PREFS_AUTO_BACKUP_FAILED = "AutoBackupFailed"
     private const val SHARED_PREFS_AUTO_DELETE_OLD_UNDOWNLOADED_MEDIA = "AutoDeleteOldUndownloadedMedia"
     private const val SHARED_PREFS_APP_LANGUAGE = "AppLanguage"
     private const val SHARED_PREFS_APP_UPDATE_CHANNEL = "AppUpdateChannel"
@@ -1180,6 +1184,22 @@ object ChatController {
     val r = sendCmd(rh, CC.ApiClearChatStorageBudget(type, id))
     if (r is API.Result && r.res is CR.ChatStorageBudgets) return r.res.storageBudgets
     Log.e(TAG, "apiClearChatStorageBudget bad response: ${r.responseType} ${r.details}")
+    return null
+  }
+
+  // Counted and removed by the core from chat.db, so the numbers shown match what gets deleted;
+  // favorited/collected files and saved notes are never removed.
+  suspend fun apiGetRemovableLocalFiles(days: Int): Pair<Int, Long>? {
+    val r = sendCmd(null, CC.ApiGetRemovableLocalFiles(days))
+    if (r is API.Result && r.res is CR.RemovableLocalFiles) return r.res.filesCount to r.res.filesSize
+    Log.e(TAG, "apiGetRemovableLocalFiles bad response: ${r.responseType} ${r.details}")
+    return null
+  }
+
+  suspend fun apiRemoveLocalFilesOlderThan(days: Int): Int? {
+    val r = sendCmd(null, CC.ApiRemoveLocalFilesOlderThan(days))
+    if (r is API.Result && r.res is CR.LocalFilesRemoved) return r.res.removedFiles
+    Log.e(TAG, "apiRemoveLocalFilesOlderThan bad response: ${r.responseType} ${r.details}")
     return null
   }
 
@@ -3924,6 +3944,8 @@ sealed class CC {
   class ApiGetChatStorageBudgets: CC()
   class ApiSetChatStorageBudget(val type: ChatType, val id: Long, val budgetBytes: Long): CC()
   class ApiClearChatStorageBudget(val type: ChatType, val id: Long): CC()
+  class ApiGetRemovableLocalFiles(val days: Int): CC()
+  class ApiRemoveLocalFilesOlderThan(val days: Int): CC()
   class ApiCreateChatItems(val noteFolderId: Long, val composedMessages: List<ComposedMessage>): CC()
   class ApiReportMessage(val groupId: Long, val chatItemId: Long, val reportReason: ReportReason, val reportText: String): CC()
   class ApiUpdateChatItem(val type: ChatType, val id: Long, val scope: GroupChatScope?, val itemId: Long, val updatedMessage: UpdatedMessage, val live: Boolean): CC()
@@ -4132,6 +4154,8 @@ sealed class CC {
     is ApiGetChatStorageBudgets -> "/_get storage budgets"
     is ApiSetChatStorageBudget -> "/_set storage budget ${chatRef(type, id, scope = null)} $budgetBytes"
     is ApiClearChatStorageBudget -> "/_clear storage budget ${chatRef(type, id, scope = null)}"
+    is ApiGetRemovableLocalFiles -> "/_get removable local files $days"
+    is ApiRemoveLocalFilesOlderThan -> "/_remove local files older than $days"
     is ApiCreateChatItems -> {
       val msgs = json.encodeToString(composedMessages)
       "/_create *$noteFolderId json $msgs"
@@ -4340,6 +4364,8 @@ sealed class CC {
     is ApiGetChatStorageBudgets -> "apiGetChatStorageBudgets"
     is ApiSetChatStorageBudget -> "apiSetChatStorageBudget"
     is ApiClearChatStorageBudget -> "apiClearChatStorageBudget"
+    is ApiGetRemovableLocalFiles -> "apiGetRemovableLocalFiles"
+    is ApiRemoveLocalFilesOlderThan -> "apiRemoveLocalFilesOlderThan"
     is ApiCreateChatItems -> "apiCreateChatItems"
     is ApiReportMessage -> "apiReportMessage"
     is ApiUpdateChatItem -> "apiUpdateChatItem"
@@ -6698,6 +6724,8 @@ sealed class CR {
   @Serializable @SerialName("tagsUpdated") class TagsUpdated(val user: UserRef, val userTags: List<ChatTag>, val chatTags: List<Long>): CR()
   @Serializable @SerialName("fileVault") class FileVault(val user: UserRef, val fileVault: FileVaultData): CR()
   @Serializable @SerialName("chatStorageBudgets") class ChatStorageBudgets(val user: UserRef, val storageBudgets: List<ChatStorageBudget>): CR()
+  @Serializable @SerialName("removableLocalFiles") class RemovableLocalFiles(val user: UserRef, val filesCount: Int, val filesSize: Long): CR()
+  @Serializable @SerialName("localFilesRemoved") class LocalFilesRemoved(val user: UserRef, val removedFiles: Int): CR()
   @Serializable @SerialName("invitation") class Invitation(val user: UserRef, val connLinkInvitation: CreatedConnLink, val connection: PendingContactConnection): CR()
   @Serializable @SerialName("connectionIncognitoUpdated") class ConnectionIncognitoUpdated(val user: UserRef, val toConnection: PendingContactConnection): CR()
   @Serializable @SerialName("connectionUserChanged") class ConnectionUserChanged(val user: UserRef, val fromConnection: PendingContactConnection, val toConnection: PendingContactConnection, val newUser: UserRef): CR()
@@ -6895,6 +6923,8 @@ sealed class CR {
     is TagsUpdated -> "tagsUpdated"
     is FileVault -> "fileVault"
     is ChatStorageBudgets -> "chatStorageBudgets"
+    is RemovableLocalFiles -> "removableLocalFiles"
+    is LocalFilesRemoved -> "localFilesRemoved"
     is Invitation -> "invitation"
     is ConnectionIncognitoUpdated -> "connectionIncognitoUpdated"
     is ConnectionUserChanged -> "ConnectionUserChanged"
@@ -7084,6 +7114,8 @@ sealed class CR {
     is TagsUpdated -> withUser(user, "userTags: ${json.encodeToString(userTags)}\nchatTags: ${json.encodeToString(chatTags)}")
     is FileVault -> withUser(user, json.encodeToString(fileVault))
     is ChatStorageBudgets -> withUser(user, json.encodeToString(storageBudgets))
+    is RemovableLocalFiles -> withUser(user, "$filesCount files, $filesSize bytes")
+    is LocalFilesRemoved -> withUser(user, "$removedFiles files removed")
     is Invitation -> withUser(user, "connLinkInvitation: ${json.encodeToString(connLinkInvitation)}\nconnection: $connection")
     is ConnectionIncognitoUpdated -> withUser(user, json.encodeToString(toConnection))
     is ConnectionUserChanged -> withUser(user, "fromConnection: ${json.encodeToString(fromConnection)}\ntoConnection: ${json.encodeToString(toConnection)}\nnewUser: ${json.encodeToString(newUser)}" )

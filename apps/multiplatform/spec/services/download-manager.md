@@ -36,10 +36,16 @@ Entry point: Settings → Chat database → "Download manager".
   and SMP inline `RcvChunkFinal`). Best-effort — a hash failure never blocks the download.
 - **Auto-duplicate notice** — `CEvtRcvFileDuplicate` (new `ChatEvent`), fires right after a
   download completes if its hash matches an existing file; Kotlin shows a toast.
-- **Storage budgets** — `ChatStorageBudgets` in `DownloadManagerModel.kt`. Deliberately
-  **not** DB-backed like favorites — a byte threshold per chat isn't sensitive metadata the way
-  "which files did you star" is, so plaintext-local (same tier as `themes.yaml`) is an
-  appropriate choice here, not a downgrade.
+- **Storage budgets** — `ChatStorageBudgets` in `DownloadManagerModel.kt`, stored in the
+  `local_chat_storage_budgets` table inside encrypted `chat.db` (migration
+  `M20260702_download_manager_v2`; originally a plaintext JSON file, moved for consistency).
+- **File verification** — the core checks every received group/channel file against the
+  digest its sender declared (upstream v7). Files that pass are listed in
+  `FileVault.verifiedFileIds` and shown with a verified badge; duplicate cleanup keeps a
+  verified copy. Files that fail are never retried (`FileError.retryable`).
+- **Delete files older than N days** — done by the core (`/_remove local files older than N`):
+  deletes the local copy, clears its path, local encryption key and dedup hash, and marks
+  received files as no longer available. Favorites, collection members and saved notes are kept.
 
 Toolchain note: development moved to Linux (Oct 2026). Build the Haskell core with
 `scripts/desktop/build-lib-linux.sh` (GHC 9.6.3 + cabal via ghcup; needs libssl-dev, libgmp-dev,

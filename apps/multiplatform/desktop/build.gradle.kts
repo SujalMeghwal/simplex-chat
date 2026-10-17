@@ -38,6 +38,8 @@ compose {
           "-Dcom.sun.management.jmxremote.authenticate=false"
         )
       }
+      // No JVM crash logs (hs_err_pid*.log) or core dumps: both can contain decrypted messages and keys
+      jvmArgs += listOf("-XX:-CreateCoredumpOnCrash", "-XX:ErrorFile=/dev/null")
       mainClass = "chat.simplex.desktop.MainKt"
       nativeDistributions {
         copyright = "(c) 2020-2026 SimpleX Chat"

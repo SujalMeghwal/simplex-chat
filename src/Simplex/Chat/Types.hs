@@ -2160,7 +2160,9 @@ data FileCollectionEntry = FileCollectionEntry
 
 data FileVault = FileVault
   { favoriteFileIds :: [Int64],
-    fileCollections :: [FileCollectionEntry]
+    fileCollections :: [FileCollectionEntry],
+    -- received files whose content matched the digest declared by the sender (group/channel files)
+    verifiedFileIds :: [Int64]
   }
   deriving (Show)
 

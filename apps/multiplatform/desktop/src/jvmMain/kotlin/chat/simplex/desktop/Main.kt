@@ -20,6 +20,8 @@ import kotlinx.coroutines.*
 import java.io.File
 
 fun main() {
+  // before anything creates a file or loads the core
+  hardenLinuxProcess()
   try {
     if (!acquireSingleInstance()) return
     // Clean shared temp dirs only in the owning instance (not in a Files.desktop val
@@ -31,8 +33,13 @@ fun main() {
     runMigrations()
     setupUpdateChecker()
     initApp()
+    migratePlaintextSecretsToKeyring()
     tmpDir.deleteRecursively()
     tmpDir.mkdir()
+    if (databaseExportDir != tmpDir) {
+      databaseExportDir.deleteRecursively()
+      databaseExportDir.mkdirs()
+    }
     // Only the owning instance cleans tmpDir on exit (see preferencesTmpDir above).
     tmpDir.deleteOnExit()
     // showApp is inside the try: its first statements (SystemTray probe, Compose setup) are the

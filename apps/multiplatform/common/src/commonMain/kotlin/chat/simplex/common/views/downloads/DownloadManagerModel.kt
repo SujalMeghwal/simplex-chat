@@ -6,8 +6,8 @@ import chat.simplex.common.platform.*
 // Everything in this file is local-device-only: no network call, no sync, no telemetry.
 // Favorites/collections and per-chat storage budgets all persist inside chat.db
 // (local_file_favorites/local_file_collections/local_chat_storage_budgets tables) — same
-// on-device SQLCipher tier as the rest of the app's data, never bundled into any export/share/
-// backup path, never touched by SMP/XFTP protocol code.
+// on-device SQLCipher tier as the rest of the app's data (included in database exports only as
+// part of the encrypted chat.db), never touched by SMP/XFTP protocol code.
 
 enum class FileCategory { Image, Video, Voice, File }
 
@@ -54,6 +54,12 @@ data class UnifiedFileEntry(
   // user can see a download is in flight instead of the button looking dead.
   val isDownloading: Boolean get() = item.file?.fileStatus.let { it is CIFileStatus.RcvAccepted || it is CIFileStatus.RcvTransfer }
   val isFailed: Boolean get() = statusFilter == DownloadStatusFilter.Failed
+  val isVerified: Boolean get() = fileId?.let { LocalFileVault.isVerified(it) } ?: false
+  // Received content didn't match the digest the sender declared (core rejects it after download).
+  // Re-downloading fetches the same bad bytes, so these are never retried.
+  val isVerificationFailed: Boolean get() = (item.file?.fileStatus as? CIFileStatus.RcvError)?.rcvFileError?.isDigestMismatch == true
+  // failed in a way that can't succeed on retry (see FileError.retryable)
+  val isPermanentlyFailed: Boolean get() = (item.file?.fileStatus as? CIFileStatus.RcvError)?.rcvFileError?.retryable == false
   // A file that has an offer but no local bytes yet and isn't already downloading/failed — i.e. the
   // set that "Download all pending" and the pending filter act on.
   val isPending: Boolean get() = !isLocal && !isDownloading && item.file != null
@@ -65,7 +71,8 @@ data class UnifiedFileEntry(
   // Monotonic-ish bytes-so-far for aggregate speed sampling: mid-transfer -> bytes received,
   // finished -> full size, not started -> 0. Summed across refreshes to derive download speed.
   val rcvBytes: Long get() = (item.file?.fileStatus as? CIFileStatus.RcvTransfer)?.rcvProgress ?: if (isLocal) fileSize else 0L
-  val senderName: String get() = if (item.chatDir.sent) "me" else chat.chatInfo.displayName
+  // in groups/channels the member who sent it, not the group name
+  val senderName: String get() = if (item.chatDir.sent) "me" else (item.memberDisplayName ?: chat.chatInfo.displayName)
   val chatName: String get() = chat.chatInfo.displayName
   val createdAt get() = item.meta.itemTs
   // Timestamp used for sorting: the newest across all duplicate copies when set (see dedup), else own.
@@ -107,46 +114,56 @@ fun List<UnifiedFileEntry>.dedupByContent(): List<UnifiedFileEntry> =
 // Favorites/collections live inside chat.db (local_file_favorites / local_file_collections(_members),
 // added by migration M20260701_download_manager) — same SQLCipher encryption tier as every other
 // local chat record, instead of a separate plaintext file. Still 100% local: these tables are never
-// touched by SMP/XFTP/agent protocol code and never ride along on migrate-to-device/export.
+// touched by SMP/XFTP/agent protocol code (they are in database exports only inside encrypted chat.db).
 //
 // This object just caches the last-fetched FileVaultData in memory for synchronous reads (list
 // filtering needs isFavorite() without suspending); every mutation goes to core first and only
 // updates the cache from the authoritative response.
 object LocalFileVault {
   private var cache: FileVaultData = FileVaultData(emptyList(), emptyList())
+  private var verified: Set<Long> = emptySet()
 
   suspend fun load(rhId: Long?) {
-    chatModel.controller.apiGetFileVault(rhId)?.let { cache = it }
+    chatModel.controller.apiGetFileVault(rhId)?.let { setCache(it) }
+  }
+
+  private fun setCache(v: FileVaultData) {
+    cache = v
+    verified = v.verifiedFileIds.toHashSet()
   }
 
   fun isFavorite(fileId: Long): Boolean = cache.favoriteFileIds.contains(fileId)
 
+  // content matched the digest the sender declared (checked by the core on download)
+  fun isVerified(fileId: Long): Boolean = fileId in verified
+
   suspend fun toggleFavorite(rhId: Long?, fileId: Long) {
-    chatModel.controller.apiToggleFileFavorite(rhId, fileId)?.let { cache = it }
+    chatModel.controller.apiToggleFileFavorite(rhId, fileId)?.let { setCache(it) }
   }
 
   fun collectionNames(): List<String> = cache.fileCollections.map { it.collectionName }.sorted()
 
   suspend fun addToCollection(rhId: Long?, name: String, fileId: Long) {
-    chatModel.controller.apiAddFileToCollection(rhId, fileId, name)?.let { cache = it }
+    chatModel.controller.apiAddFileToCollection(rhId, fileId, name)?.let { setCache(it) }
   }
 
   suspend fun removeFromCollection(rhId: Long?, name: String, fileId: Long) {
-    chatModel.controller.apiRemoveFileFromCollection(rhId, fileId, name)?.let { cache = it }
+    chatModel.controller.apiRemoveFileFromCollection(rhId, fileId, name)?.let { setCache(it) }
   }
 
   fun filesInCollection(name: String): Set<Long> =
     cache.fileCollections.find { it.collectionName == name }?.fileIds?.toSet() ?: emptySet()
 
   suspend fun deleteCollection(rhId: Long?, name: String) {
-    chatModel.controller.apiDeleteFileCollection(rhId, name)?.let { cache = it }
+    chatModel.controller.apiDeleteFileCollection(rhId, name)?.let { setCache(it) }
   }
 }
 
 // One dedup group: same content hash, multiple files. All entries after the first (oldest) are
 // candidates for cleanup.
 data class DuplicateGroup(val hash: String, val entries: List<UnifiedFileEntry>) {
-  val keep: UnifiedFileEntry get() = entries.minBy { it.createdAt }
+  // prefer a copy whose content was verified against the sender's digest, then the oldest
+  val keep: UnifiedFileEntry get() = entries.minWith(compareByDescending<UnifiedFileEntry> { it.isVerified }.thenBy { it.createdAt })
   val removable: List<UnifiedFileEntry> get() = entries.filter { it.item.id != keep.item.id }
   val reclaimableBytes: Long get() = removable.sumOf { it.fileSize }
 }
@@ -258,6 +275,10 @@ fun storageHealth(entries: List<UnifiedFileEntry>, duplicates: List<DuplicateGro
   if (dupRatio > 0.15) { score -= 20; notes.add("High duplicate ratio (${"%.0f".format(dupRatio * 100)}%)" to false) } else notes.add("Few duplicates" to true)
   if (oldRatio > 0.4) { score -= 15; notes.add("Lots of 2+ year old local media" to false) } else notes.add("Local media is reasonably fresh" to true)
   if (local.size > 5000) { score -= 10; notes.add("Large local file index (${local.size} files)" to false) }
+  val verifiedCount = local.count { it.isVerified }
+  if (verifiedCount > 0) notes.add("$verifiedCount files verified against the sender's digest" to true)
+  val badDigest = entries.count { it.isVerificationFailed }
+  if (badDigest > 0) { score -= 10; notes.add("$badDigest files failed verification (altered or corrupted)" to false) }
   return StorageHealth(score.coerceIn(0, 100), notes)
 }
 
@@ -285,7 +306,7 @@ object ChatStorageBudgets {
   }
 
   suspend fun load(rhId: Long?) {
-    chatModel.controller.apiGetChatStorageBudgets(rhId)?.let { cache = it }
+    chatModel.controller.apiGetChatStorageBudgets(rhId)?.let { setCache(it) }
   }
 
   fun get(chat: Chat): Long? {
@@ -299,7 +320,7 @@ object ChatStorageBudgets {
     } else {
       chatModel.controller.apiSetChatStorageBudget(rhId, chat.chatInfo.chatType, chat.chatInfo.apiId, budgetBytes)
     }
-    updated?.let { cache = it }
+    updated?.let { setCache(it) }
   }
 }
 

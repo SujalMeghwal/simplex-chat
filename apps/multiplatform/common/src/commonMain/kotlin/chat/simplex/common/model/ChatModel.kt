@@ -4523,6 +4523,13 @@ sealed class FileError {
     is Blocked -> generalGetString(MR.strings.how_it_works) to contentModerationPostLink
     else -> null
   }
+
+  // Content didn't match the digest the sender declared; downloading again fetches the same bytes
+  val isDigestMismatch: Boolean get() = this is Other && fileError == "file digest"
+
+  // Only transient (relay/network) failures can succeed when retried; a digest mismatch, a file
+  // removed from this device or expired on the server, or an auth/blocked error will fail again.
+  val retryable: Boolean get() = this is Relay || (this is Other && !isDigestMismatch)
 }
 
 @Suppress("SERIALIZER_TYPE_INCOMPATIBLE")
@@ -5407,7 +5414,9 @@ data class FileCollectionEntry(
 @Serializable
 data class FileVaultData(
   val favoriteFileIds: List<Long>,
-  val fileCollections: List<FileCollectionEntry>
+  val fileCollections: List<FileCollectionEntry>,
+  // received files whose content matched the sender-declared digest (group/channel files)
+  val verifiedFileIds: List<Long> = emptyList()
 )
 
 // Mirrors Haskell ChatStorageBudget (Types.hs) — field names match the sb*-prefixed JSON keys

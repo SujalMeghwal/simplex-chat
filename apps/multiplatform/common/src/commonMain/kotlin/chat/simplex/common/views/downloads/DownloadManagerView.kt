@@ -26,6 +26,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import chat.simplex.common.model.*
 import chat.simplex.common.platform.*
+import chat.simplex.common.ui.theme.WarningOrange
 import chat.simplex.common.views.chat.providerForGallery
 import chat.simplex.common.views.chat.item.openGalleryModal
 import chat.simplex.common.views.helpers.AlertManager
@@ -226,9 +227,18 @@ private fun BrowseTab(all: List<UnifiedFileEntry>, reload: suspend (Boolean) -> 
 
   // Non-null while the add-to-collection dialog is open (for one entry or the whole selection).
   val collectionTarget = remember { mutableStateOf<List<UnifiedFileEntry>?>(null) }
+  // Images/videos open in the in-app viewer (decrypted in memory). Opening them in an external app
+  // would write a decrypted copy to disk, and that app may keep it in recent files / thumbnail caches.
+  val openInApp = remember { mutableStateOf<(UnifiedFileEntry) -> Unit>({}) }
   val fileActions = remember {
     FileEntryActions(
-      open = { e -> if (e.isLocal) openEntryFile(e) else scope.launch { actionMsg.value = downloadRespectingPrivacy(listOf(e)); reload(false) } },
+      open = { e ->
+        when {
+          !e.isLocal -> scope.launch { actionMsg.value = downloadRespectingPrivacy(listOf(e)); reload(false) }
+          e.category == FileCategory.Image || e.category == FileCategory.Video -> openInApp.value(e)
+          else -> openEntryFile(e)
+        }
+      },
       reveal = { e -> revealEntry(e) },
       favorite = { e -> scope.launch { e.fileId?.let { LocalFileVault.toggleFavorite(chatModel.remoteHostId(), it) }; favToggle.value++ } },
       retry = { e -> scope.launch { actionMsg.value = downloadRespectingPrivacy(listOf(e)); reload(false) } },
@@ -273,6 +283,8 @@ private fun BrowseTab(all: List<UnifiedFileEntry>, reload: suspend (Boolean) -> 
       )
     }
   }
+
+  openInApp.value = { openItem(it) }
 
   Box(Modifier.fillMaxSize()) {
   Column(Modifier.fillMaxSize()) {
@@ -345,7 +357,7 @@ private fun BrowseTab(all: List<UnifiedFileEntry>, reload: suspend (Boolean) -> 
     // Bulk actions — pick many at once, or grab everything pending, without tapping each tile.
     val filteredIds = remember(filtered) { filtered.mapNotNull { it.fileId } }
     val pending = remember(filtered) { filtered.filter { it.isPending } }
-    val failed = remember(filtered) { filtered.filter { it.isFailed } }
+    val failed = remember(filtered) { filtered.filter { it.isFailed && !it.isPermanentlyFailed } }
     val allSelected = filteredIds.isNotEmpty() && selected.containsAll(filteredIds)
     Row(
       Modifier.fillMaxWidth().padding(horizontal = 8.dp),
@@ -700,12 +712,18 @@ private fun GridTile(e: UnifiedFileEntry, isSelected: Boolean, actions: FileEntr
           CircularProgressIndicator(color = Color.White, strokeWidth = 2.dp, modifier = Modifier.size(14.dp))
         }
       }
+      e.isVerificationFailed -> Box(Modifier.align(Alignment.BottomEnd).padding(4.dp)) {
+        Icon(painterResource(MR.images.ic_warning_filled), contentDescription = "Failed verification", tint = WarningOrange, modifier = Modifier.size(16.dp))
+      }
       e.isFailed -> Box(Modifier.align(Alignment.BottomEnd).padding(4.dp)) {
         Icon(painterResource(MR.images.ic_close), contentDescription = "Failed", tint = Color(0xFFE57373), modifier = Modifier.size(16.dp))
       }
       !e.isLocal -> Box(Modifier.align(Alignment.BottomEnd).padding(4.dp)) {
         Icon(painterResource(MR.images.ic_download), contentDescription = "Not downloaded", tint = Color.White, modifier = Modifier.size(16.dp))
       }
+    }
+    if (e.isVerified) {
+      Icon(painterResource(MR.images.ic_verified_filled), contentDescription = "Verified", tint = Color.White, modifier = Modifier.align(Alignment.TopStart).padding(4.dp).size(14.dp))
     }
     if (isSelected) {
       Box(Modifier.fillMaxSize().background(MaterialTheme.colors.primary.copy(alpha = 0.25f)))
@@ -764,8 +782,12 @@ private fun ListRow(e: UnifiedFileEntry, isSelected: Boolean, actions: FileEntry
           CircularProgressIndicator(color = MaterialTheme.colors.primary, strokeWidth = 2.dp, modifier = Modifier.size(18.dp))
         }
       }
+      e.isVerificationFailed -> Icon(painterResource(MR.images.ic_warning_filled), contentDescription = "Failed verification", tint = WarningOrange, modifier = Modifier.size(18.dp))
       e.isFailed -> Icon(painterResource(MR.images.ic_close), contentDescription = "Failed", tint = Color(0xFFE57373), modifier = Modifier.size(18.dp))
       !e.isLocal -> Icon(painterResource(MR.images.ic_download), contentDescription = "Not downloaded", tint = MaterialTheme.colors.secondary, modifier = Modifier.size(18.dp))
+    }
+    if (e.isVerified) {
+      Icon(painterResource(MR.images.ic_verified_filled), contentDescription = "Verified", tint = MaterialTheme.colors.primary, modifier = Modifier.size(18.dp).padding(start = 6.dp))
     }
     if (e.fileId != null && LocalFileVault.isFavorite(e.fileId!!)) {
       Icon(painterResource(MR.images.ic_star_filled), contentDescription = "Favorite", tint = MaterialTheme.colors.primary, modifier = Modifier.size(18.dp).padding(start = 6.dp))
@@ -823,8 +845,23 @@ fun revealEntry(e: UnifiedFileEntry) {
 // which is surprising, unconfirmed data loss on what the user invoked as a "download" action. No
 // approval popup is shown. Returns a short summary for feedback.
 suspend fun downloadRespectingPrivacy(entries: List<UnifiedFileEntry>): String {
-  val ids = entries.mapNotNull { it.fileId }
-  if (ids.isEmpty()) return ""
+  val (permanent, toDownload) = entries.partition { it.isPermanentlyFailed }
+  val badDigest = permanent.count { it.isVerificationFailed }
+  val skippedBad = listOfNotNull(
+    if (badDigest > 0) "skipped $badDigest that failed verification" else null,
+    if (permanent.size > badDigest) "skipped ${permanent.size - badDigest} no longer available" else null
+  ).joinToString(" · ")
+  val ids = toDownload.mapNotNull { it.fileId }
+  if (ids.isEmpty()) return skippedBad.replaceFirstChar { it.uppercase() }
+  val msg = downloadIdsRespectingPrivacy(toDownload, ids)
+  return when {
+    skippedBad.isEmpty() -> msg
+    msg.isEmpty() -> skippedBad.replaceFirstChar { it.uppercase() }
+    else -> "$msg · $skippedBad"
+  }
+}
+
+private suspend fun downloadIdsRespectingPrivacy(entries: List<UnifiedFileEntry>, ids: List<Long>): String {
   val rhId = entries.firstOrNull()?.chat?.remoteHostId
   val user = chatModel.currentUser.value ?: return ""
   val notApproved = chatModel.controller.receiveFilesSkippingUnapproved(rhId, user, ids).toHashSet()
@@ -926,7 +963,12 @@ private fun EntryContextMenu(e: UnifiedFileEntry, expanded: MutableState<Boolean
         DropdownMenuItem(onClick = { expanded.value = false; actions.reveal(e) }) { Text("Reveal in folder") }
       }
     }
-    if (!e.isLocal && e.item.file != null) {
+    if (e.isVerified) {
+      DropdownMenuItem(onClick = {}, enabled = false) { Text("Verified — matches the sender's file") }
+    }
+    if (e.isVerificationFailed) {
+      DropdownMenuItem(onClick = {}, enabled = false) { Text("Failed verification — file was altered or corrupted", color = WarningOrange) }
+    } else if (!e.isLocal && e.item.file != null && !e.isPermanentlyFailed) {
       DropdownMenuItem(onClick = { expanded.value = false; actions.retry(e) }) { Text(if (e.isFailed) "Retry download" else "Download") }
     }
     DropdownMenuItem(onClick = { expanded.value = false; actions.favorite(e) }) {

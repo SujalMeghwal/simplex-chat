@@ -71,6 +71,8 @@ class BrowserLink(
   val lastSender: String,
   val lastTs: Instant,
   val count: Int,
+  // the newest message carrying this link had a verified signature (signed channel messages)
+  val lastSenderVerified: Boolean = false,
 ) {
   var status by mutableStateOf(if (kind == LinkKind.Web) LinkStatus.Web else LinkStatus.Checking)
   // Resolved SimpleX entity ("g:<id>" / "c:<id>") so multiple links to the same
@@ -354,7 +356,7 @@ private fun StatusBadge(status: LinkStatus) {
 }
 
 private fun metaLine(link: BrowserLink): String {
-  val who = link.lastSender
+  val who = if (link.lastSenderVerified) "${link.lastSender} ✓ signed" else link.lastSender
   val shared = if (link.count > 1) " · shared ${link.count}×" else ""
   return "$who$shared"
 }
@@ -420,20 +422,23 @@ private fun extractAndDedup(items: List<ChatItem>, chatInfo: ChatInfo): List<Bro
   // key -> aggregation
   class Agg(
     var displayUrl: String, val kind: LinkKind, val simplexType: SimplexLinkType?, val host: String,
-    var title: String?, var image: String?, var lastSender: String, var lastTs: Instant, var count: Int
+    var title: String?, var image: String?, var lastSender: String, var lastTs: Instant, var count: Int,
+    var lastVerified: Boolean
   )
   val map = LinkedHashMap<String, Agg>()
   // newest first from loader; walk oldest->newest so lastTs/sender end up newest
   for (ci in items.sortedBy { it.meta.itemTs }) {
     val sender = if (ci.chatDir.sent) "You" else (ci.memberDisplayName ?: chatInfo.displayName)
+    val verified = ci.meta.msgVerified?.verified == true
     for (raw in rawLinksOf(ci)) {
       val key = if (raw.kind == LinkKind.Web) (normalizeWeb(raw.url) ?: continue) else "sx:${raw.url.trim()}"
       val agg = map[key]
       if (agg == null) {
-        map[key] = Agg(raw.url, raw.kind, raw.simplexType, raw.host, raw.title, raw.image, sender, ci.meta.itemTs, 1)
+        map[key] = Agg(raw.url, raw.kind, raw.simplexType, raw.host, raw.title, raw.image, sender, ci.meta.itemTs, 1, verified)
       } else {
         agg.count++
         agg.lastSender = sender
+        agg.lastVerified = verified
         agg.lastTs = ci.meta.itemTs
         if (agg.title == null && raw.title != null) agg.title = raw.title
         if (agg.image == null && raw.image != null) agg.image = raw.image
@@ -441,7 +446,7 @@ private fun extractAndDedup(items: List<ChatItem>, chatInfo: ChatInfo): List<Bro
     }
   }
   return map.entries.map { (k, a) ->
-    BrowserLink(a.displayUrl, k, a.kind, a.simplexType, a.host, a.title, a.image, a.lastSender, a.lastTs, a.count)
+    BrowserLink(a.displayUrl, k, a.kind, a.simplexType, a.host, a.title, a.image, a.lastSender, a.lastTs, a.count, a.lastVerified)
   }
 }
 
@@ -462,7 +467,8 @@ private fun mergeByEntity(links: List<BrowserLink>): List<BrowserLink> {
           existing.displayUrl, existing.dedupKey, existing.kind, existing.simplexType, existing.host,
           existing.title ?: l.title, existing.imageBase64, existing.lastSender,
           if (l.lastTs > existing.lastTs) l.lastTs else existing.lastTs,
-          existing.count + l.count
+          existing.count + l.count,
+          existing.lastSenderVerified
         )
         folded.status = existing.status
         folded.entityKey = ek

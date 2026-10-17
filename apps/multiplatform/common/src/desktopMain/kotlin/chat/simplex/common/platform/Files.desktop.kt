@@ -15,7 +15,13 @@ import kotlinx.coroutines.withContext
 actual val dataDir: File = File(desktopPlatform.dataPath)
 // No deleteOnExit() here: a transient second instance also inits this val, and its exit
 // would delete the shared folder while the primary runs. Registered in Main instead.
-actual val tmpDir: File = File(System.getProperty("java.io.tmpdir") + File.separator + "simplex")
+// Linux: the per-user runtime dir (RAM, mode 0700, removed at logout), so decrypted temporary copies
+// never reach the disk and other users can't read them.
+actual val tmpDir: File = File(
+  (if (desktopPlatform.isLinux()) System.getenv("XDG_RUNTIME_DIR")?.takeIf { File(it).isDirectory } else null)
+    ?: System.getProperty("java.io.tmpdir"),
+  "simplex"
+)
 actual val filesDir: File = File(dataDir.absolutePath + File.separator + "simplex_v1_files")
 actual val appFilesDir: File = filesDir
 actual val wallpapersDir: File = File(dataDir.absolutePath + File.separator + "simplex_v1_assets" + File.separator + "wallpapers").also { it.mkdirs() }
@@ -29,7 +35,9 @@ actual val preferencesTmpDir = File(desktopPlatform.configPath, "tmp")
 actual val chatDatabaseFileName: String = "simplex_v1_chat.db"
 actual val agentDatabaseFileName: String = "simplex_v1_agent.db"
 
-actual val databaseExportDir: File = tmpDir
+// Linux: next to the database, not in tmpDir — an archive can be larger than the RAM-backed runtime dir.
+// Owner-only (see hardenLinuxProcess), cleaned on start in Main.
+actual val databaseExportDir: File = if (desktopPlatform.isLinux()) File(dataDir, "export_tmp") else tmpDir
 
 actual val remoteHostsDir: File = File(dataDir.absolutePath + File.separator + "remote_hosts")
 

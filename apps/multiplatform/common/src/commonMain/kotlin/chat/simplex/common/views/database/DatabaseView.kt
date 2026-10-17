@@ -93,10 +93,19 @@ fun DatabaseView() {
         }
       },
       deleteFilesOlderThan = { days ->
-        deleteFilesOlderThanAlert(days) {
-          stopChatRunBlockStartChat(stopped, chatLastStart, progressIndicator) {
-            deleteFilesOlderThan(days, appFilesCountAndSize)
-            true
+        withBGApi {
+          // the core removes files and updates their chat items, so chat must be running
+          val (count, size) = chatModel.controller.apiGetRemovableLocalFiles(days) ?: return@withBGApi
+          deleteFilesOlderThanAlert(days, count, size) {
+            withBGApi {
+              progressIndicator.value = true
+              try {
+                chatModel.controller.apiRemoveLocalFilesOlderThan(days)
+              } finally {
+                appFilesCountAndSize.value = directoryFileCountAndSize(appFilesDir.absolutePath)
+                progressIndicator.value = false
+              }
+            }
           }
         }
       },
@@ -181,12 +190,12 @@ fun DatabaseLayout(
       SectionDividerSpaced()
     }
     if (chatModel.localUserCreated.value == true && stopped && !progressIndicator) {
-      SectionItemView(startChat) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-          Icon(painterResource(MR.images.ic_report_filled), contentDescription = null, tint = Color.Red, modifier = Modifier.size(20.dp))
-          Spacer(Modifier.width(8.dp))
-          Column {
-            Text("Chat stopped", color = Color.Red, style = MaterialTheme.typography.body1)
+      SectionView {
+        SectionItemView(startChat) {
+          Icon(painterResource(MR.images.ic_report_filled), contentDescription = null, tint = Color.Red)
+          TextIconSpaced(false)
+          Column(Modifier.weight(1f)) {
+            Text("Chat stopped", color = Color.Red)
             Text("Tap to restart", color = MaterialTheme.colors.secondary, style = MaterialTheme.typography.caption)
           }
         }
@@ -234,7 +243,7 @@ fun DatabaseLayout(
       Spacer(Modifier.height(8.dp))
     }
 
-    SectionView("AUTO BACKUP") {
+    SectionView("Auto backup") {
       SettingsActionItemWithContent(
         icon = painterResource(MR.images.ic_folder_open),
         text = "Auto-backup",
@@ -273,16 +282,25 @@ fun DatabaseLayout(
         }
       }
     }
+    if (autoBackupEnabled.value && chatModel.controller.appPrefs.autoBackupFailed.state.value) {
+      SectionTextFooter("Last automatic backup failed. Use \"Backup now\" to see the error.", color = WarningOrange)
+    }
     SectionTextFooter(if (autoBackupEnabled.value && autoBackupFolder.value != null) "Backup runs automatically when app closes (if last backup was more than 1 day ago)." else "Enable to automatically save backups to a folder — no manual export needed.")
     SectionDividerSpaced()
 
     SectionView(stringResource(MR.strings.files_and_media_section)) {
       val deleteFilesDisabled = operationsDisabled || appFilesCountAndSize.value.first == 0
       val fileAgeOptions = listOf(30 to "older than 30 days", 90 to "older than 90 days", 180 to "older than 6 months")
-      fileAgeOptions.forEach { (days, label) ->
-        val filesInRange = remember(appFilesCountAndSize.value) {
-          countFilesOlderThan(days)
+      // counted once per change of the files total, by the core from chat.db (not by walking the files folder)
+      val removable = remember { mutableStateMapOf<Int, Pair<Int, Long>>() }
+      LaunchedEffect(appFilesCountAndSize.value) {
+        if (chatModel.chatRunning.value != true) return@LaunchedEffect
+        fileAgeOptions.forEach { (days, _) ->
+          chatModel.controller.apiGetRemovableLocalFiles(days)?.let { removable[days] = it }
         }
+      }
+      fileAgeOptions.forEach { (days, label) ->
+        val filesInRange = removable[days] ?: return@forEach
         if (filesInRange.first > 0) {
           SectionItemView(
             click = if (operationsDisabled) null else ({ deleteFilesOlderThan(days) }),
@@ -786,20 +804,17 @@ private fun lastBackupText(lastBackup: Instant?): String =
     }
   }
 
-private fun verifyExportIntegrity(archivePath: String) {
+// Checks that the archive contains both databases. Returns an error description, or null if the archive looks complete.
+private fun exportIntegrityError(archivePath: String): String? =
   try {
-    val zip = java.util.zip.ZipFile(archivePath)
-    val entries = zip.entries().toList().map { it.name }
-    zip.close()
-    val hasChatDb = entries.any { it.endsWith(chatDatabaseFileName) || it == chatDatabaseFileName }
-    val hasAgentDb = entries.any { it.endsWith(agentDatabaseFileName) || it == agentDatabaseFileName }
-    if (!hasChatDb || !hasAgentDb) {
-      AlertManager.shared.showAlertMsg("Backup Warning", "Backup file was created but one or more database files may be missing. Verify the file before relying on it.")
-    }
+    val entries = java.util.zip.ZipFile(archivePath).use { zip -> zip.entries().toList().map { it.name } }
+    val hasChatDb = entries.any { it.endsWith(chatDatabaseFileName) }
+    val hasAgentDb = entries.any { it.endsWith(agentDatabaseFileName) }
+    if (hasChatDb && hasAgentDb) null
+    else "Backup file was created but one or more database files may be missing. Verify the file before relying on it."
   } catch (e: Exception) {
-    AlertManager.shared.showAlertMsg("Backup Warning", "Backup file could not be verified: ${e.message}")
+    "Backup file could not be verified: ${e.message}"
   }
-}
 
 private suspend fun exportArchiveToFolder(
   m: ChatModel,
@@ -811,9 +826,13 @@ private suspend fun exportArchiveToFolder(
   try {
     val (archiveFile, archiveErrors) = exportChatArchive(m, folder, chatArchiveFile)
     progressIndicator.value = false
-    if (archiveErrors.isNotEmpty()) {
+    val integrityError = exportIntegrityError(archiveFile)
+    if (integrityError != null) {
+      AlertManager.shared.showAlertMsg("Backup Warning", integrityError)
+    } else if (archiveErrors.isNotEmpty()) {
       showArchiveExportedWithErrorsAlert(generalGetString(MR.strings.chat_database_exported_save), archiveErrors) {}
     } else {
+      m.controller.appPrefs.autoBackupFailed.set(false)
       AlertManager.shared.showAlertMsg("Backup saved", "Backup saved to:\n${archiveFile.substringAfterLast(File.separator)}")
     }
   } catch (e: Throwable) {
@@ -823,31 +842,18 @@ private suspend fun exportArchiveToFolder(
   return false
 }
 
-fun countFilesOlderThan(days: Int): Pair<Int, Long> {
-  val cutoff = System.currentTimeMillis() - days.toLong() * 86400_000L
-  var count = 0; var size = 0L
-  appFilesDir.walkTopDown().filter { it.isFile && it.lastModified() < cutoff }.forEach { count++; size += it.length() }
-  return count to size
-}
-
-private fun deleteFilesOlderThan(days: Int, appFilesCountAndSize: MutableState<Pair<Int, Long>>) {
-  val cutoff = System.currentTimeMillis() - days.toLong() * 86400_000L
-  appFilesDir.walkTopDown().filter { it.isFile && it.lastModified() < cutoff }.forEach { it.delete() }
-  appFilesCountAndSize.value = directoryFileCountAndSize(appFilesDir.absolutePath)
-}
-
-private fun deleteFilesOlderThanAlert(days: Int, onConfirm: () -> Unit) {
-  val (count, size) = countFilesOlderThan(days)
+private fun deleteFilesOlderThanAlert(days: Int, count: Int, size: Long, onConfirm: () -> Unit) {
   AlertManager.shared.showAlertDialog(
     title = "Delete files older than $days days?",
-    text = "$count files (${formatBytes(size)}) will be permanently deleted.",
+    text = "$count files (${formatBytes(size)}) will be permanently deleted from this device. Messages stay; received files will show as no longer available. Favorited files, files in collections and saved notes are kept.",
     confirmText = "Delete",
     onConfirm = onConfirm,
     destructive = true
   )
 }
 
-// Called from DesktopApp close handler to auto-backup if configured and overdue
+// Called from DesktopApp close handler to auto-backup if configured and overdue.
+// The window is closing, so there is no UI: failures are recorded in autoBackupFailed and shown on next launch.
 suspend fun runAutoBackupIfNeeded(m: ChatModel) {
   val prefs = m.controller.appPrefs
   if (!prefs.autoBackupEnabled.get()) return
@@ -856,9 +862,22 @@ suspend fun runAutoBackupIfNeeded(m: ChatModel) {
   val lastBackup = prefs.chatArchiveTime.get()
   val overdue = lastBackup == null || (Clock.System.now() - lastBackup).inWholeDays >= 1
   if (!overdue) return
-  val archiveFile = mutableStateOf<String?>(null)
-  val progress = mutableStateOf(false)
-  exportArchiveToFolder(m, progress, archiveFile, File(folder))
+  // marked failed until it completes, so a backup cut off by the shutdown timeout is reported too
+  prefs.autoBackupFailed.set(true)
+  val ok = try {
+    // The core only exports a stopped chat. Not using stopChatAsync: it persists chatStopped,
+    // which would keep chat stopped on the next launch.
+    if (m.chatRunning.value == true) {
+      m.controller.apiStopChat()
+      m.chatRunning.value = false
+    }
+    val (archivePath, archiveErrors) = exportChatArchive(m, File(folder), mutableStateOf(null))
+    archiveErrors.isEmpty() && exportIntegrityError(archivePath) == null
+  } catch (e: Throwable) {
+    Log.e(TAG, "auto-backup failed: ${e.javaClass.simpleName}")
+    false
+  }
+  prefs.autoBackupFailed.set(!ok)
 }
 
 private suspend fun exportArchive(
@@ -913,9 +932,6 @@ suspend fun exportChatArchive(
     m.controller.appPrefs.chatArchiveTime.set(archiveTime)
   }
   chatArchiveFile.value = archivePath
-  // Integrity check only for unattended folder/auto-backups — manual exports already surface
-  // archiveErrors to the user, and their archive lives only briefly before being copied away.
-  if (storagePath != null) verifyExportIntegrity(archivePath)
   return archivePath to archiveErrors
 }
 

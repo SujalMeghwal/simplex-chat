@@ -32,6 +32,8 @@ module Simplex.Chat.Store.Files
     updateFileHash,
     findDuplicateFileName,
     getOrCreateHashKey,
+    getRemovableLocalFiles,
+    markLocalFileRemoved,
     getSharedMsgIdByFileId,
     getFileIdBySharedMsgId,
     getGroupFileIdBySharedMsgId,
@@ -330,6 +332,42 @@ findDuplicateFileName db User {userId} fileId fileHash =
 -- Per-user random 32-byte key so file_hash is an HMAC, not a plain hash -- an attacker with a
 -- precomputed hash of a known file can't match it against this profile without this key. Never
 -- transmitted, never leaves local_hash_key.
+-- Completed files with a local copy created before the cutoff, across all profiles (the files folder
+-- is shared). Saved notes (snd_stored), transfers in progress, internal (roster) files, and files the
+-- user favorited or put into a collection are never returned. Fields: id, path, received, size.
+getRemovableLocalFiles :: DB.Connection -> UTCTime -> IO [(Int64, FilePath, Bool, Integer)]
+getRemovableLocalFiles db cutoff =
+  map (\(fileId, filePath, BI rcv, fileSize) -> (fileId, filePath, rcv, fileSize))
+    <$> DB.query
+      db
+      [sql|
+        SELECT f.file_id, f.file_path, f.ci_file_status = 'rcv_complete', f.file_size
+        FROM files f
+        WHERE f.file_path IS NOT NULL
+          AND f.file_type = 'normal'
+          AND f.ci_file_status IN ('rcv_complete', 'snd_complete')
+          AND f.created_at < ?
+          AND NOT EXISTS (SELECT 1 FROM local_file_favorites lf WHERE lf.file_id = f.file_id)
+          AND NOT EXISTS (SELECT 1 FROM local_file_collection_members cm WHERE cm.file_id = f.file_id)
+      |]
+      (Only cutoff)
+
+-- After the local copy is deleted: drop the path, the local encryption key and the dedup hash, and
+-- show a received file as no longer available (it can't be re-downloaded once completed).
+markLocalFileRemoved :: DB.Connection -> Int64 -> Bool -> IO ()
+markLocalFileRemoved db fileId rcv = do
+  currentTs <- getCurrentTime
+  DB.execute
+    db
+    [sql|
+      UPDATE files
+      SET file_path = NULL, file_crypto_key = NULL, file_crypto_nonce = NULL, file_hash = NULL, updated_at = ?
+      WHERE file_id = ?
+    |]
+    (currentTs, fileId)
+  when rcv $
+    DB.execute db "UPDATE files SET ci_file_status = ? WHERE file_id = ?" (CIFSRcvError FileErrNoFile, fileId)
+
 getOrCreateHashKey :: DB.Connection -> User -> IO ByteString
 getOrCreateHashKey db User {userId} = do
   existing <- maybeFirstRow fromOnly $ DB.query db "SELECT hash_key FROM local_hash_key WHERE user_id = ?" (Only userId)

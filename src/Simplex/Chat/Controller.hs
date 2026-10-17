@@ -398,6 +398,10 @@ data ChatCommand
   | APIGetChatStorageBudgets
   | APISetChatStorageBudget {chatRef :: ChatRef, budgetBytes :: Int64}
   | APIClearChatStorageBudget {chatRef :: ChatRef}
+  -- Deletes local copies of completed files created more than N days ago (all profiles: the files
+  -- folder is shared), keeping favorited/collected files; marks received ones as no longer available.
+  | APIRemoveLocalFilesOlderThan Int -- days
+  | APIGetRemovableLocalFiles Int -- days
   | APICreateChatItems {noteFolderId :: NoteFolderId, composedMessages :: NonEmpty ComposedMessage}
   | APIReportMessage {groupId :: GroupId, chatItemId :: ChatItemId, reportReason :: ReportReason, reportText :: Text}
   | ReportMessage {groupName :: GroupName, contactName_ :: Maybe ContactName, reportReason :: ReportReason, reportedMessage :: Text}
@@ -721,6 +725,8 @@ allowRemoteCommand = \case
   APIStorageEncryption _ -> False
   SlowSQLQueries -> False
 #endif
+  APIRemoveLocalFilesOlderThan _ -> False
+  APIGetRemovableLocalFiles _ -> False
   APISetNetworkConfig _ -> False
   APIGetNetworkConfig -> False
   SetLocalDeviceName _ -> False
@@ -815,6 +821,8 @@ data ChatResponse
   | CRTagsUpdated {user :: User, userTags :: [ChatTag], chatTags :: [ChatTagId]}
   | CRFileVault {user :: User, fileVault :: FileVault}
   | CRChatStorageBudgets {user :: User, storageBudgets :: [ChatStorageBudget]}
+  | CRLocalFilesRemoved {user :: User, removedFiles :: Int}
+  | CRRemovableLocalFiles {user :: User, filesCount :: Int, filesSize :: Integer}
   | CRNewChatItems {user :: User, chatItems :: [AChatItem]}
   | CRChatItemUpdated {user :: User, chatItem :: AChatItem}
   | CRChatItemNotChanged {user :: User, chatItem :: AChatItem}

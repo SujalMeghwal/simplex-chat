@@ -73,7 +73,7 @@ import Simplex.Chat.Types
 import Simplex.Chat.Types.MemberRelations
 import Simplex.Chat.Types.Preferences
 import Simplex.Chat.Types.Shared
-import Simplex.Chat.Util (hashFile)
+import Simplex.Chat.Util (digestAndHashFile, hashFile)
 import Simplex.FileTransfer.Description (ValidFileDescription)
 import qualified Simplex.FileTransfer.Description as FD
 import Simplex.FileTransfer.Protocol (FilePartyI)
@@ -350,10 +350,15 @@ processAgentMsgRcvFile _corrId aFileId msg = do
             Just targetPath -> do
               fsTargetPath <- lift $ toFSFilePath targetPath
               renameFile xftpPath fsTargetPath
-              badDigest <- case ft of
-                RcvFileTransfer {fileInvitation = FileInvitation {fileDigest = Just d}, cryptoArgs} ->
-                  (/= d) <$> cryptoFileDigest (CryptoFile fsTargetPath cryptoArgs)
-                _ -> pure False
+              -- one read for both the digest check and the local dedup hash (fork: Util.digestAndHashFile)
+              let RcvFileTransfer {cryptoArgs = ftCryptoArgs} = ft
+              hmacKey <- withStore' $ \db -> getOrCreateHashKey db user
+              digestHash <- liftIO $ runExceptT $ digestAndHashFile hmacKey (CryptoFile fsTargetPath ftCryptoArgs)
+              let fileHash_ = either (const Nothing) (Just . snd) digestHash
+                  -- unreadable file with a declared digest is rejected, not accepted unverified
+                  badDigest = case ft of
+                    RcvFileTransfer {fileInvitation = FileInvitation {fileDigest = Just d}} -> either (const True) ((/= d) . fst) digestHash
+                    _ -> False
               if badDigest
                 then do
                   aci_ <- resetRcvCIFileStatus user fileId (CIFSRcvError $ FileErrOther "file digest")
@@ -361,9 +366,6 @@ processAgentMsgRcvFile _corrId aFileId msg = do
                   agentXFTPDeleteRcvFile aFileId fileId
                   forM_ aci_ $ \aci -> toView $ CEvtChatItemUpdated user aci
                 else do
-                  let RcvFileTransfer {cryptoArgs = ftCryptoArgs} = ft
-                  hmacKey <- withStore' $ \db -> getOrCreateHashKey db user
-                  fileHash_ <- liftIO $ either (const Nothing) Just <$> runExceptT (hashFile hmacKey fsTargetPath ftCryptoArgs)
                   ci_ <- withStore $ \db -> do
                     liftIO $ do
                       updateRcvFileStatus db fileId FSComplete

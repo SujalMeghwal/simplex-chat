@@ -413,6 +413,11 @@ parseChatCommand = A.parseOnly chatCommandP . B.dropWhileEnd isSpace
 -- Maps a ChatRef onto the same (contact_id, group_id, note_folder_id) identification the files
 -- table itself already uses, for local_chat_storage_budgets. Non-chat ChatTypes (contact
 -- request/connection) have no storage budget concept, so they map to no identifiers.
+filesCutoff :: Int -> CM UTCTime
+filesCutoff days = do
+  when (days < 1) $ throwChatError $ CECommandError "days must be positive"
+  addUTCTime (negate $ fromIntegral days * nominalDay) <$> liftIO getCurrentTime
+
 chatRefToIds :: ChatType -> Int64 -> (Maybe Int64, Maybe Int64, Maybe Int64)
 chatRefToIds cType chatId = case cType of
   CTDirect -> (Just chatId, Nothing, Nothing)
@@ -752,7 +757,7 @@ processChatCommand cxt nm = \case
   APIGetFileVault -> withUser $ \user -> withFastStore' $ \db ->
     CRFileVault user <$> getFileVault db user
   APIToggleFileFavorite fileId -> withUser $ \user -> withFastStore' $ \db -> do
-    toggleFileFavorite db fileId
+    toggleFileFavorite db user fileId
     CRFileVault user <$> getFileVault db user
   APIAddFileToCollection fileId name -> withUser $ \user -> withFastStore' $ \db -> do
     addFileToCollection db user name fileId
@@ -773,6 +778,14 @@ processChatCommand cxt nm = \case
     let (cId, gId, nfId) = chatRefToIds cType chatId
     clearChatStorageBudget db user cId gId nfId
     CRChatStorageBudgets user <$> getChatStorageBudgets db user
+  APIRemoveLocalFilesOlderThan days -> withUser $ \user -> do
+    files <- withFastStore' . flip getRemovableLocalFiles =<< filesCutoff days
+    deleteFilesLocally $ map (\(fileId, filePath, _, _) -> CIFileInfo {fileId, fileStatus = Nothing, filePath = Just filePath}) files
+    withFastStore' $ \db -> forM_ files $ \(fileId, _, rcv, _) -> markLocalFileRemoved db fileId rcv
+    pure $ CRLocalFilesRemoved user (length files)
+  APIGetRemovableLocalFiles days -> withUser $ \user -> do
+    files <- withFastStore' . flip getRemovableLocalFiles =<< filesCutoff days
+    pure $ CRRemovableLocalFiles user (length files) (sum $ map (\(_, _, _, size) -> size) files)
   APICreateChatItems folderId cms -> withUser $ \user -> do
     forM_ cms $ \cm -> assertAllowedContent' cm >> assertNoMentions cm
     createNoteFolderContentItems user folderId (L.map composedMessageReq cms)
@@ -5498,6 +5511,8 @@ chatCommandP =
       "/_get storage budgets" $> APIGetChatStorageBudgets,
       "/_set storage budget " *> (APISetChatStorageBudget <$> chatRefP <* A.space <*> A.decimal),
       "/_clear storage budget " *> (APIClearChatStorageBudget <$> chatRefP),
+      "/_remove local files older than " *> (APIRemoveLocalFilesOlderThan <$> A.decimal),
+      "/_get removable local files " *> (APIGetRemovableLocalFiles <$> A.decimal),
       "/_create *" *> (APICreateChatItems <$> A.decimal <*> (" json " *> jsonP <|> " text " *> composedMessagesTextP)),
       "/_report #" *> (APIReportMessage <$> A.decimal <* A.space <*> A.decimal <*> (" reason=" *> strP) <*> (A.space *> textP <|> pure "")),
       "/report #" *> (ReportMessage <$> displayNameP <*> optional (" @" *> displayNameP) <*> _strP <* A.space <*> msgTextP),
