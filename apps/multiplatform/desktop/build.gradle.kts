@@ -48,6 +48,14 @@ compose {
           // 'jdk.unsupported' is for vlcj
           modules("jdk.zipfs", "jdk.unsupported")
         }
+        val os = System.getProperty("os.name", "generic").toDefaultLowerCase()
+        // 'jdk.accessibility' provides Java Access Bridge on Windows - without it the app
+        // fails to start with "Failed to launch JVM" when assistive technologies are enabled
+        // in the system (see #4146). Packages are always built on the target OS, so only
+        // the Windows build needs to bundle it.
+        if (os.contains("win")) {
+          modules("jdk.accessibility")
+        }
         //includeAllModules = true
         outputBaseDir.set(project.file("../release"))
         appResourcesRootDir.set(project.file("../build/links"))
@@ -97,7 +105,6 @@ compose {
             }
           }
         }
-        val os = System.getProperty("os.name", "generic").toDefaultLowerCase()
         if (os.contains("mac") || os.contains("win")) {
           packageName = "SimpleX"
         } else {
@@ -155,10 +162,9 @@ cmake {
 tasks.named("clean") {
   dependsOn("cmakeClean")
 }
-// cmake builds libapp-lib.dll; skip when using pre-built DLLs from installed app
-// tasks.named("compileKotlinJvm") {
-//   dependsOn("cmakeBuildAndCopy")
-// }
+tasks.named("compileKotlinJvm") {
+  dependsOn("cmakeBuildAndCopy")
+}
 afterEvaluate {
   tasks.create("cmakeBuildAndCopy") {
     dependsOn("cmakeBuild")

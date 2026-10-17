@@ -12,10 +12,12 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.*
 import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.layout.layoutId
 import androidx.compose.ui.platform.*
 import dev.icerock.moko.resources.compose.painterResource
 import dev.icerock.moko.resources.compose.stringResource
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import chat.simplex.common.views.helpers.*
@@ -27,6 +29,7 @@ import chat.simplex.common.views.chat.chatViewScrollState
 import chat.simplex.res.MR
 import dev.icerock.moko.resources.StringResource
 import kotlinx.coroutines.*
+import kotlin.math.roundToInt
 
 @Composable
 fun CIImageView(
@@ -108,13 +111,13 @@ fun CIImageView(
           onClick = onClick
         )
         .onRightClick { showMenu.value = true }
-        .privacyBlur(!smallView, blurred, scrollState = chatViewScrollState.collectAsState(), onLongClick = { showMenu.value = true }),
+        .privacyBlur(!smallView, imageBitmap, blurred, scrollState = chatViewScrollState.collectAsState(), onLongClick = { showMenu.value = true }),
       contentScale = if (smallView) ContentScale.Crop else ContentScale.FillWidth,
     )
   }
 
   @Composable
-  fun ImageView(painter: Painter, image: String, fileSource: CryptoFile?, onClick: () -> Unit) {
+  fun ImageView(painter: Painter, image: String, onClick: () -> Unit) {
     // On my Android device Compose fails to display 6000x6000 px WebP image with exception:
     // IllegalStateException: Recording currently in progress - missing #endRecording() call?
     // but can display 5000px image. Using even lower value here just to feel safer.
@@ -132,7 +135,7 @@ fun CIImageView(
             onClick = onClick
           )
           .onRightClick { showMenu.value = true }
-          .privacyBlur(!smallView, blurred, scrollState = chatViewScrollState.collectAsState(), onLongClick = { showMenu.value = true }),
+          .privacyBlur(!smallView, previewBitmap, blurred, scrollState = chatViewScrollState.collectAsState(), onLongClick = { showMenu.value = true }),
         contentScale = if (smallView) ContentScale.Crop else ContentScale.FillWidth,
       )
     } else {
@@ -143,14 +146,10 @@ fun CIImageView(
           onClick = {}
         )
         .onRightClick { showMenu.value = true }
-        .privacyBlur(!smallView, blurred, scrollState = chatViewScrollState.collectAsState(), onLongClick = { showMenu.value = true }),
+        .privacyBlur(!smallView, previewBitmap, blurred, scrollState = chatViewScrollState.collectAsState(), onLongClick = { showMenu.value = true }),
         contentAlignment = Alignment.Center
       ) {
-        imageView(previewBitmap, onClick = {
-          if (fileSource != null) {
-            openFile(fileSource)
-          }
-        })
+        imageView(previewBitmap, onClick = onClick)
         Icon(
           painterResource(MR.images.ic_open_in_new),
           contentDescription = stringResource(MR.strings.image_descr),
@@ -176,32 +175,42 @@ fun CIImageView(
       .then(
         if (!smallView) {
           val w = if (previewBitmap.width * 0.97 <= previewBitmap.height) imageViewFullWidth() * 0.75f else DEFAULT_MAX_IMAGE_WIDTH
-          Modifier.width(w).aspectRatio((previewBitmap.width.toFloat() / previewBitmap.height.toFloat()).coerceAtLeast(1f / 2.33f))
+          // Height follows the measured (clamped) width, not nominal w, else wide images get an empty strip below.
+          Modifier.width(w).layout { measurable, constraints ->
+            val width = constraints.maxWidth.coerceAtMost(w.roundToPx().coerceAtLeast(0))
+            val height = (width * (previewBitmap.height.toFloat() / previewBitmap.width.toFloat()).coerceAtMost(2.33f)).roundToInt().coerceAtMost(constraints.maxHeight)
+            val placeable = measurable.measure(Constraints.fixed(width, height))
+            layout(width, height) { placeable.place(0, 0) }
+          }
         } else Modifier
       )
-      .desktopModifyBlurredState(!smallView, blurred, showMenu),
+      .desktopModifyBlurredState(blurred, showMenu),
     contentAlignment = Alignment.TopEnd
   ) {
     val res: MutableState<Triple<ImageBitmap, ByteArray, String>?> = remember { mutableStateOf(null) }
-    if (chatModel.connectedToRemote()) {
-      LaunchedEffect(file, CIFile.cachedRemoteFileRequests.toList()) {
-        withBGApi {
+    // Hidden media is not worth reading, decoding at full size and caching.
+    val revealed = !blurHidesMedia(!smallView, blurred)
+    if (revealed) {
+      if (chatModel.connectedToRemote()) {
+        LaunchedEffect(file, CIFile.cachedRemoteFileRequests.toList()) {
+          withBGApi {
+            if (res.value == null || res.value!!.third != getLoadedFilePath(file)) {
+              res.value = imageAndFilePath(file)
+            }
+          }
+        }
+      } else {
+        LaunchedEffect(file) {
           if (res.value == null || res.value!!.third != getLoadedFilePath(file)) {
-            res.value = imageAndFilePath(file)
+            res.value = withContext(Dispatchers.IO) { imageAndFilePath(file) }
           }
         }
       }
-    } else {
-      LaunchedEffect(file) {
-        if (res.value == null || res.value!!.third != getLoadedFilePath(file)) {
-          res.value = withContext(Dispatchers.IO) { imageAndFilePath(file) }
-        }
-      }
     }
-    val loaded = res.value
+    val loaded = if (revealed) res.value else null
     if (loaded != null && file != null) {
       val (imageBitmap, data, _) = loaded
-      SimpleAndAnimatedImageView(data, imageBitmap, file, imageProvider, smallView, @Composable { painter, onClick -> ImageView(painter, image, file.fileSource, onClick) })
+      SimpleAndAnimatedImageView(data, imageBitmap, file, imageProvider, smallView, @Composable { painter, onClick -> ImageView(painter, image, onClick) })
     } else {
       imageView(previewBitmap, onClick = {
         if (file != null) {

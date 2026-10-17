@@ -18,4 +18,4 @@ pluginManagement {
 
 rootProject.name = "app"
 
-include(":desktop", ":common")
+include(":desktop", ":common", ":external:nanohttpd")

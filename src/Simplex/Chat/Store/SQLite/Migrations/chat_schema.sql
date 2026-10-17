@@ -28,7 +28,11 @@ CREATE TABLE contact_profiles(
   badge_extra TEXT,
   badge_master_key BLOB,
   badge_signature BLOB,
-  badge_key_idx INTEGER
+  badge_key_idx INTEGER,
+  contact_domain TEXT,
+  contact_domain_proof TEXT,
+  contact_domain_verified INTEGER,
+  description TEXT
 ) STRICT;
 CREATE TABLE users(
   user_id INTEGER PRIMARY KEY,
@@ -48,7 +52,8 @@ CREATE TABLE users(
   ui_themes TEXT,
   active_order INTEGER NOT NULL DEFAULT 0,
   auto_accept_member_contacts INTEGER NOT NULL DEFAULT 0,
-  is_user_chat_relay INTEGER NOT NULL DEFAULT 0, -- 1 for active user
+  is_user_chat_relay INTEGER NOT NULL DEFAULT 0,
+  client_service INTEGER NOT NULL DEFAULT 0, -- 1 for active user
   FOREIGN KEY(user_id, local_display_name)
   REFERENCES display_names(user_id, local_display_name)
   ON DELETE RESTRICT
@@ -138,7 +143,8 @@ CREATE TABLE group_profiles(
   group_web_page TEXT,
   group_domain TEXT,
   domain_web_page INTEGER,
-  allow_embedding INTEGER
+  allow_embedding INTEGER,
+  group_domain_proof TEXT
 ) STRICT;
 CREATE TABLE groups(
   group_id INTEGER PRIMARY KEY, -- local group ID
@@ -190,7 +196,18 @@ CREATE TABLE groups(
   relay_request_retries INTEGER NOT NULL DEFAULT 0,
   relay_request_delay INTEGER NOT NULL DEFAULT 0,
   relay_request_execute_at TEXT NOT NULL DEFAULT '1970-01-01 00:00:00',
-  relay_inactive_at TEXT, -- received
+  relay_inactive_at TEXT,
+  relay_sent_web_domain TEXT,
+  roster_version INTEGER,
+  roster_msg_body BLOB,
+  roster_msg_chat_binding TEXT,
+  roster_msg_signatures BLOB,
+  roster_sending_owner_gm_id INTEGER,
+  roster_broker_ts TEXT,
+  roster_blob BLOB,
+  group_domain_verified INTEGER,
+  stored_roster_version INTEGER,
+  applied_complete_roster_version INTEGER, -- received
   FOREIGN KEY(user_id, local_display_name)
   REFERENCES display_names(user_id, local_display_name)
   ON DELETE CASCADE
@@ -234,6 +251,10 @@ CREATE TABLE group_members(
   member_relations_vector BLOB,
   relay_link BLOB,
   member_pub_key BLOB,
+  removed_at TEXT,
+  roster_served_version INTEGER,
+  member_security_code TEXT,
+  member_security_code_verified_at TEXT,
   FOREIGN KEY(user_id, local_display_name)
   REFERENCES display_names(user_id, local_display_name)
   ON DELETE CASCADE
@@ -276,8 +297,12 @@ CREATE TABLE files(
   file_crypto_nonce BLOB,
   note_folder_id INTEGER DEFAULT NULL REFERENCES note_folders ON DELETE CASCADE,
   redirect_file_id INTEGER REFERENCES files ON DELETE CASCADE,
+  shared_msg_id BLOB,
+  file_type TEXT NOT NULL DEFAULT 'normal',
+  roster_transfer_id INTEGER,
   file_hash TEXT,
-  file_mime TEXT
+  file_mime TEXT,
+  file_digest BLOB
 ) STRICT;
 CREATE TABLE snd_files(
   file_id INTEGER NOT NULL REFERENCES files ON DELETE CASCADE,
@@ -382,6 +407,7 @@ CREATE TABLE user_contact_links(
   short_link_contact BLOB,
   short_link_data_set INTEGER NOT NULL DEFAULT 0,
   short_link_large_data_set INTEGER NOT NULL DEFAULT 0,
+  link_priv_sig_key BLOB,
   UNIQUE(user_id, local_display_name)
 ) STRICT;
 CREATE TABLE contact_requests(
@@ -484,7 +510,11 @@ CREATE TABLE chat_items(
   show_group_as_sender INTEGER NOT NULL DEFAULT 0,
   has_link INTEGER NOT NULL DEFAULT 0,
   msg_signed TEXT,
-  item_viewed INTEGER NOT NULL DEFAULT 0
+  item_viewed INTEGER NOT NULL DEFAULT 0,
+  item_msg_body BLOB,
+  item_chat_binding TEXT,
+  item_signatures BLOB,
+  item_signed_by_group_member_id INTEGER REFERENCES group_members ON DELETE SET NULL
 ) STRICT;
 CREATE TABLE sqlite_sequence(name,seq);
 CREATE TABLE chat_item_messages(
@@ -537,6 +567,9 @@ CREATE TABLE IF NOT EXISTS "protocol_servers"(
   created_at TEXT NOT NULL DEFAULT(datetime('now')),
   updated_at TEXT NOT NULL DEFAULT(datetime('now')),
   protocol TEXT NOT NULL DEFAULT 'smp',
+  role_storage INTEGER,
+  role_proxy INTEGER,
+  role_names INTEGER,
   UNIQUE(user_id, host, port)
 ) STRICT;
 CREATE TABLE xftp_file_descriptions(
@@ -689,6 +722,8 @@ CREATE TABLE server_operators(
   xftp_role_proxy INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL DEFAULT(datetime('now')),
   updated_at TEXT NOT NULL DEFAULT(datetime('now'))
+  ,
+  smp_role_names INTEGER NOT NULL DEFAULT 0
 ) STRICT;
 CREATE TABLE usage_conditions(
   usage_conditions_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -749,7 +784,6 @@ CREATE TABLE delivery_jobs(
   job_scope_spec_tag TEXT,
   job_scope_include_pending INTEGER,
   job_scope_support_gm_id INTEGER REFERENCES group_members(group_member_id) ON DELETE CASCADE,
-  single_sender_group_member_id INTEGER REFERENCES group_members(group_member_id) ON DELETE CASCADE,
   body BLOB,
   cursor_group_member_id INTEGER,
   job_status TEXT NOT NULL,
@@ -757,6 +791,8 @@ CREATE TABLE delivery_jobs(
   failed INTEGER DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT(datetime('now')),
   updated_at TEXT NOT NULL DEFAULT(datetime('now'))
+  ,
+  sender_group_member_ids TEXT
 ) STRICT;
 CREATE TABLE group_member_status_predicates(
   member_status TEXT NOT NULL PRIMARY KEY,
@@ -795,6 +831,20 @@ CREATE TABLE group_relays(
   updated_at TEXT NOT NULL DEFAULT(datetime('now'))
   ,
   base_web_url TEXT
+) STRICT;
+CREATE TABLE rcv_roster_transfers(
+  roster_transfer_id INTEGER PRIMARY KEY,
+  group_id INTEGER NOT NULL REFERENCES groups ON DELETE CASCADE,
+  from_member_id INTEGER NOT NULL REFERENCES group_members ON DELETE CASCADE,
+  roster_version INTEGER NOT NULL,
+  roster_digest BLOB NOT NULL,
+  sending_owner_gm_id INTEGER NOT NULL,
+  broker_ts TEXT NOT NULL,
+  roster_msg_body BLOB,
+  roster_msg_chat_binding TEXT,
+  roster_msg_signatures BLOB,
+  created_at TEXT NOT NULL DEFAULT(datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT(datetime('now'))
 ) STRICT;
 CREATE INDEX contact_profiles_index ON contact_profiles(
   display_name,
@@ -1235,9 +1285,6 @@ CREATE INDEX idx_delivery_jobs_group_id ON delivery_jobs(group_id);
 CREATE INDEX idx_delivery_jobs_job_scope_support_gm_id ON delivery_jobs(
   job_scope_support_gm_id
 );
-CREATE INDEX idx_delivery_jobs_single_sender_group_member_id ON delivery_jobs(
-  single_sender_group_member_id
-);
 CREATE INDEX idx_delivery_jobs_next ON delivery_jobs(
   group_id,
   worker_scope,
@@ -1318,38 +1365,18 @@ ON groups(
   relay_request_group_link
 )
 WHERE relay_request_group_link IS NOT NULL;
-CREATE TRIGGER on_group_members_insert_update_summary
-AFTER INSERT ON group_members
-FOR EACH ROW
-WHEN EXISTS (SELECT 1 FROM group_member_status_predicates WHERE member_status = NEW.member_status AND current_member = 1)
-BEGIN
-  UPDATE groups
-  SET summary_current_members_count = summary_current_members_count + 1
-  WHERE group_id = NEW.group_id;
-END;
-CREATE TRIGGER on_group_members_delete_update_summary
-AFTER DELETE ON group_members
-FOR EACH ROW
-WHEN EXISTS (SELECT 1 FROM group_member_status_predicates WHERE member_status = OLD.member_status AND current_member = 1)
-BEGIN
-  UPDATE groups
-  SET summary_current_members_count = summary_current_members_count - 1
-  WHERE group_id = OLD.group_id;
-END;
-CREATE TRIGGER on_group_members_update_update_summary
-AFTER UPDATE ON group_members
-FOR EACH ROW
-WHEN EXISTS (SELECT 1 FROM group_member_status_predicates WHERE member_status = OLD.member_status AND current_member = 1)
-     != EXISTS (SELECT 1 FROM group_member_status_predicates WHERE member_status = NEW.member_status AND current_member = 1)
-BEGIN
-    UPDATE groups
-    SET summary_current_members_count = summary_current_members_count +
-        (
-          CASE WHEN EXISTS (SELECT 1 FROM group_member_status_predicates WHERE member_status = NEW.member_status AND current_member = 1)
-          THEN 1 ELSE -1 END
-        )
-    WHERE group_id = NEW.group_id;
-END;
+CREATE UNIQUE INDEX idx_rcv_roster_transfers_group_id_from_member_id ON rcv_roster_transfers(
+  group_id,
+  from_member_id
+);
+CREATE INDEX idx_rcv_roster_transfers_from_member_id ON rcv_roster_transfers(
+  from_member_id
+);
+CREATE INDEX idx_files_group_id_shared_msg_id ON files(
+  group_id,
+  shared_msg_id
+);
+CREATE INDEX idx_files_roster_transfer_id ON files(roster_transfer_id);
 CREATE INDEX idx_files_file_hash ON files (user_id, file_hash);
 CREATE INDEX idx_files_file_name ON files (user_id, file_name);
 CREATE TABLE local_file_collections (
@@ -1393,3 +1420,38 @@ CREATE UNIQUE INDEX idx_local_chat_storage_budgets_chat ON local_chat_storage_bu
   IFNULL(group_id, -1),
   IFNULL(note_folder_id, -1)
 );
+CREATE INDEX idx_chat_items_item_signed_by_group_member_id ON chat_items(
+  item_signed_by_group_member_id
+);
+CREATE TRIGGER on_group_members_insert_update_summary
+AFTER INSERT ON group_members
+FOR EACH ROW
+WHEN EXISTS (SELECT 1 FROM group_member_status_predicates WHERE member_status = NEW.member_status AND current_member = 1)
+BEGIN
+  UPDATE groups
+  SET summary_current_members_count = summary_current_members_count + 1
+  WHERE group_id = NEW.group_id;
+END;
+CREATE TRIGGER on_group_members_delete_update_summary
+AFTER DELETE ON group_members
+FOR EACH ROW
+WHEN EXISTS (SELECT 1 FROM group_member_status_predicates WHERE member_status = OLD.member_status AND current_member = 1)
+BEGIN
+  UPDATE groups
+  SET summary_current_members_count = summary_current_members_count - 1
+  WHERE group_id = OLD.group_id;
+END;
+CREATE TRIGGER on_group_members_update_update_summary
+AFTER UPDATE ON group_members
+FOR EACH ROW
+WHEN EXISTS (SELECT 1 FROM group_member_status_predicates WHERE member_status = OLD.member_status AND current_member = 1)
+     != EXISTS (SELECT 1 FROM group_member_status_predicates WHERE member_status = NEW.member_status AND current_member = 1)
+BEGIN
+    UPDATE groups
+    SET summary_current_members_count = summary_current_members_count +
+        (
+          CASE WHEN EXISTS (SELECT 1 FROM group_member_status_predicates WHERE member_status = NEW.member_status AND current_member = 1)
+          THEN 1 ELSE -1 END
+        )
+    WHERE group_id = NEW.group_id;
+END;

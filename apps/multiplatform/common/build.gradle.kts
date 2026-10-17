@@ -148,8 +148,7 @@ kotlin {
         implementation("org.slf4j:slf4j-simple:2.0.12")
         implementation("uk.co.caprica:vlcj:4.8.3")
         implementation("net.java.dev.jna:jna:5.14.0")
-        implementation("com.github.NanoHttpd.nanohttpd:nanohttpd:efb2ebf")
-        implementation("com.github.NanoHttpd.nanohttpd:nanohttpd-websocket:efb2ebf")
+        implementation(project(":external:nanohttpd"))
         implementation("com.squareup.okhttp3:okhttp:4.12.0")
       }
     }
@@ -189,7 +188,6 @@ buildConfig {
     buildConfigField("String", "DESKTOP_VERSION_NAME", "\"${extra["desktop.version_name"]}\"")
     buildConfigField("int", "DESKTOP_VERSION_CODE", "${extra["desktop.version_code"]}")
     buildConfigField("String", "DATABASE_BACKEND", "\"${extra["database.backend"]}\"")
-    buildConfigField("Boolean", "ANDROID_BUNDLE", "${extra["android.bundle"]}")
     buildConfigField("Boolean", "SIMPLEX_ASSETS", "$hasSimplexAssets")
   }
 }
@@ -214,7 +212,7 @@ afterEvaluate {
       val fontLtGtRegex = Regex("[^>]*>.*&lt;font[^>]*&gt;.*&lt;/font&gt;.*</string>")
       val unbracketedColorRegex = Regex("color=#[abcdefABCDEF0-9]{3,6}")
       val correctHtmlRegex = Regex("[^>]*>.*<b>.*</b>.*</string>|[^>]*>.*<i>.*</i>.*</string>|[^>]*>.*<u>.*</u>.*</string>|[^>]*>.*<font[^>]*>.*</font>.*</string>")
-      val possibleFormat = listOf("s", "d", "1\$s", "2\$s", "3\$s", "4\$s", "1\$d", "2\$d", "3\$d", "4\$d", "2s", "f")
+      val possibleFormat = listOf("s", "d", "1\$s", "2\$s", "3\$s", "4\$s", "1\$d", "2\$d", "3\$d", "4\$d", "1\$02d", "2\$02d", "3\$02d", "2s", "f")
 
       fun String.id(): String = replace("<string name=\"", "").trim().substringBefore("\"")
 
@@ -241,7 +239,7 @@ afterEvaluate {
           if (was.length == substring.length) break
         }
         return if (formats.any { it.startsWith("1$") || it.startsWith("2$") || it.startsWith("3$") || it.startsWith("4$") }) {
-          formats.sortedBy { it.trim('s', 'd', 'f', '$').toIntOrNull() ?: throw Exception("Formatting don't have positional arguments: $this \nin $filepath") }
+          formats.sortedBy { it.substringBefore('$').toIntOrNull() ?: throw Exception("Formatting don't have positional arguments: $this \nin $filepath") }
         } else {
           formats
         }

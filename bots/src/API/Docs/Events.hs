@@ -188,6 +188,8 @@ undocumentedEvents =
     "CEvtCustomChatEvent",
     "CEvtGroupMemberRatchetSync",
     "CEvtGroupMemberSwitch",
+    "CEvtRcvFileDuplicate",
+    "CEvtServiceSubStatus",
     "CEvtNewRemoteHost",
     "CEvtNoMemberContactCreating",
     "CEvtNtfMessage",

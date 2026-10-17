@@ -41,11 +41,11 @@ Entry point: Settings → Chat database → "Download manager".
   "which files did you star" is, so plaintext-local (same tier as `themes.yaml`) is an
   appropriate choice here, not a downgrade.
 
-Toolchain note: this machine had no Haskell toolchain at session start. Installed GHC 9.6.3 +
-cabal 3.16.1.0 + MSYS2 (OpenSSL, libpq) at `C:\ghcup` — permanent, reusable for future work on
-this fork. 11 real compiler-caught bugs were fixed along the way (missing exhaustive-match
-branches, `DuplicateRecordFields` ambiguity, missing pragmas/exports) — none of this was
-guessed, all builds are real `cabal build`/`gradlew compileKotlinDesktop` passes.
+Toolchain note: development moved to Linux (Oct 2026). Build the Haskell core with
+`scripts/desktop/build-lib-linux.sh` (GHC 9.6.3 + cabal via ghcup; needs libssl-dev, libgmp-dev,
+zlib1g-dev, patchelf), then run the desktop app with `./launch-fork.sh` from the repo root.
+The earlier Windows setup (GHC + MSYS2 at `C:\ghcup`, pre-built DLLs from the installed app)
+is no longer used.
 
 ## Deferred — needs a design decision before building
 

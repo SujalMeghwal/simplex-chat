@@ -135,6 +135,7 @@ fun FramedItemView(
 
   @Composable
   fun ciQuoteView(qi: CIQuote) {
+    val blurred = remember { mutableStateOf(appPreferences.privacyMediaBlurRadius.get() > 0) }
     val sentColor = MaterialTheme.appColors.sentQuote
     val receivedColor = MaterialTheme.appColors.receivedQuote
     Row(
@@ -152,7 +153,7 @@ fun FramedItemView(
             imageBitmap,
             contentDescription = stringResource(MR.strings.image_descr),
             contentScale = ContentScale.Crop,
-            modifier = Modifier.size(68.dp).clipToBounds()
+            modifier = Modifier.size(68.dp).clipToBounds().desktopModifyBlurredState(blurred, showMenu).privacyBlur(fullSize = false, imageBitmap, blurred, chatViewScrollState.collectAsState(), onLongClick = { showMenu.value = true })
           )
         }
         is MsgContent.MCVideo -> {
@@ -164,7 +165,7 @@ fun FramedItemView(
             imageBitmap,
             contentDescription = stringResource(MR.strings.video_descr),
             contentScale = ContentScale.Crop,
-            modifier = Modifier.size(68.dp).clipToBounds()
+            modifier = Modifier.size(68.dp).clipToBounds().desktopModifyBlurredState(blurred, showMenu).privacyBlur(fullSize = false, imageBitmap, blurred, chatViewScrollState.collectAsState(), onLongClick = { showMenu.value = true })
           )
         }
         is MsgContent.MCFile, is MsgContent.MCVoice -> {
@@ -201,7 +202,7 @@ fun FramedItemView(
 
   @Composable
   fun ciFileView(ci: ChatItem, text: String) {
-    CIFileView(ci.file, ci.meta.itemEdited, showMenu, false, ciSenderProfile(ci, chatInfo), receiveFile)
+    CIFileView(ci.file, ci.meta, chatTTL, showViaProxy, showTimestamp, showMenu, false, ciSenderProfile(ci, chatInfo), receiveFile)
     if (text != "" || ci.meta.isLive) {
       CIMarkdownText(chatsCtx, ci, chat, chatTTL, linkMode = linkMode, uriHandler, showViaProxy = showViaProxy,  showTimestamp = showTimestamp)
     }
@@ -306,7 +307,11 @@ fun FramedItemView(
                 horizontalAlignment = Alignment.CenterHorizontally
               ) {
                 EmojiText(ci.content.text)
-                Text("")
+                Text(
+                  reserveSpaceForMeta(ci.meta, chatTTL, null, secondaryColor = MaterialTheme.colors.secondary, showViaProxy = showViaProxy, showTimestamp = showTimestamp),
+                  color = Color.Transparent,
+                  style = MaterialTheme.typography.body1
+                )
               }
             }
           } else {

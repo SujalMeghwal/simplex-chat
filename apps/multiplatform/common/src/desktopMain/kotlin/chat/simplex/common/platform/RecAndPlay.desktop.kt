@@ -15,33 +15,27 @@ import java.io.File
 import java.util.*
 import kotlin.math.max
 
-// The native libs are already loaded in Main.kt (System.load + jna.library.path), and SimpleX's
-// bundled libvlc locates its own plugins (nested at vlc/vlc/plugins). Running vlcj's NativeDiscovery
-// on top of that is both unnecessary and harmful here:
-//   - it uses java.util.ServiceLoader, which NPEs on Compose/AWT render threads whose context
-//     ClassLoader is null ("NullPointerException: ... currentLoader is null"), and
-//   - when it does run it points VLC_PLUGIN_PATH at the wrong (empty) dir, so libvlc_new fails with
-//     "Failed to get a new native library instance".
-// Passing a null NativeDiscovery skips discovery entirely (verified: discoverNativeLibrary null-checks),
-// matching how the official build initialises libvlc.
+// Ensure a non-null context ClassLoader: vlcj's NativeDiscovery uses java.util.ServiceLoader, which NPEs
+// on Compose/AWT render threads whose context ClassLoader is null ("currentLoader is null").
+//
+// Linux/macOS: use upstream's default discovery (finds the VLC bundled by prepare-vlc-linux.sh via
+// jna.library.path set in Main.kt, or the system libvlc).
+//
+// Windows dev runs (gradlew :desktop:run): discovery points VLC_PLUGIN_PATH at the wrong (empty) dir and
+// libvlc_new fails with "Failed to get a new native library instance", so skip discovery and point
+// VLC_PLUGIN_PATH at the bundled plugins (nested at <resources>/vlc/vlc/plugins) explicitly.
 private fun createVlcFactory(vararg args: String): MediaPlayerFactory {
   val t = Thread.currentThread()
   if (t.contextClassLoader == null) {
     t.contextClassLoader = MediaPlayerFactory::class.java.classLoader
   }
-  // libvlc can't locate the bundled plugins on its own here, so point VLC_PLUGIN_PATH at them
-  // explicitly (they live nested at <resources>/vlc/vlc/plugins). Without this libvlc_new returns
-  // null -> "Failed to get a new native library instance". Use _putenv on Windows, setenv elsewhere.
+  if (!desktopPlatform.isWindows()) return MediaPlayerFactory(*args)
   val resourcesDir = System.getProperty("compose.application.resources.dir")
   if (resourcesDir != null) {
     val plugins = File(resourcesDir, "vlc${File.separator}vlc${File.separator}plugins")
     if (plugins.isDirectory) {
       try {
-        if (desktopPlatform.isWindows()) {
-          LibC.INSTANCE._putenv("VLC_PLUGIN_PATH=${plugins.absolutePath}")
-        } else {
-          LibC.INSTANCE.setenv("VLC_PLUGIN_PATH", plugins.absolutePath, 1)
-        }
+        LibC.INSTANCE._putenv("VLC_PLUGIN_PATH=${plugins.absolutePath}")
       } catch (e: Throwable) {
         Log.e("SimpleX", "Failed to set VLC_PLUGIN_PATH: ${e.stackTraceToString()}")
       }
@@ -50,9 +44,13 @@ private fun createVlcFactory(vararg args: String): MediaPlayerFactory {
   return MediaPlayerFactory(null as NativeDiscovery?, *args)
 }
 
-internal val vlcFactory: MediaPlayerFactory by lazy { createVlcFactory() }
+// Serialize the two factory constructions (upstream fix): building both concurrently (e.g. vlcFactory on the
+// render thread while vlcPreviewFactory is built on the preview thread) races on the JDK ServiceLoader and
+// on setting VLC_PLUGIN_PATH in the process environment.
+private val vlcFactoryLock = Any()
+internal val vlcFactory: MediaPlayerFactory by lazy { synchronized(vlcFactoryLock) { createVlcFactory() } }
 // No hardware acceleration - more secure for previews
-internal val vlcPreviewFactory: MediaPlayerFactory by lazy { createVlcFactory("--avcodec-hw=none") }
+internal val vlcPreviewFactory: MediaPlayerFactory by lazy { synchronized(vlcFactoryLock) { createVlcFactory("--avcodec-hw=none") } }
 
 actual class RecorderNative: RecorderInterface {
   private var player: MediaPlayer? = null
